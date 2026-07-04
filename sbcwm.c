@@ -4,11 +4,13 @@
 #include <xcb/shape.h>
 #include <xcb/xcb_icccm.h>
 #include <xcb/xcb_keysyms.h>
+#include <xcb/xproto.h>
 #include <xcb/xcb_aux.h>
 #include <X11/Xlib.h>
 #include <X11/Xlib-xcb.h>
 #include <X11/Xft/Xft.h>
 #include <X11/keysym.h>
+#include <X11/extensions/Xinerama.h>
 #include <math.h>
 #include <time.h>
 #include <signal.h>
@@ -45,6 +47,8 @@ static int   pan_mon      = 0;
 
 static int   hud_w = 320, hud_h = 30;
 static int   hud_mon = -1;
+
+static int running = 1;
 
 static unsigned int numlock = 0;
 char *client_get_title(xcb_window_t w);
@@ -1123,7 +1127,15 @@ void notify_motion(xcb_motion_notify_event_t *e) {
 
         int cenx = new_sx + (int)(cur->ww / 2);
         int ceny = new_sy + (int)(cur->wh / 2);
-        cur->mon = mon_from_point(cenx, ceny);
+
+	for (int i = 0; i < n_mons; i++) {
+	    if (cenx >= mons[i].x && cenx < mons[i].x + mons[i].w &&
+		ceny >= mons[i].y && ceny < mons[i].y + mons[i].h) {
+		cur->mon = i;
+		    break;
+	    }
+
+	}
 
         client_move(cur, new_sx, new_sy);
 
@@ -1451,8 +1463,8 @@ void configure_request(xcb_configure_request_event_t *e) {
     int i = 0;
     if (mask & XCB_CONFIG_WINDOW_X)            values[i++] = (uint32_t)sx;
     if (mask & XCB_CONFIG_WINDOW_Y)            values[i++] = (uint32_t)sy;
-    if (mask & XCB_CONFIG_WINDOW_WIDTH)        values[i++] = e->width;
-    if (mask & XCB_CONFIG_WINDOW_HEIGHT)       values[i++] = e->height;
+    if (mask & XCB_CONFIG_WINDOW_WIDTH)	     { values[i++] = e->width;  if (target) target->width = e->width; }
+    if (mask & XCB_CONFIG_WINDOW_HEIGHT)     { values[i++] = e->height;  if (target) target->height = e->height; }
     if (mask & XCB_CONFIG_WINDOW_SIBLING)      values[i++] = e->sibling;
     if (mask & XCB_CONFIG_WINDOW_STACK_MODE)   values[i++] = e->stack_mode;
     xcb_configure_window(conn, e->window, mask, values);
@@ -1542,20 +1554,9 @@ void map_request(xcb_map_request_event_t *e) {
     for win
         if (c->w == w) { xcb_map_window(conn, w); xcb_flush(conn); return; }
 
+
     xcb_window_t transient_for = XCB_NONE;
     xcb_icccm_get_wm_transient_for_reply(conn, xcb_icccm_get_wm_transient_for(conn, w), &transient_for, NULL);
-    if (transient_for != XCB_NONE) {
-        int is_rt = 0;
-        for win
-            if (c->w == transient_for) { is_rt = 1; break; }
-        if (is_rt) {
-            xcb_map_window(conn, w);
-            uint32_t stack = XCB_STACK_MODE_ABOVE;
-            xcb_configure_window(conn, w, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
-            xcb_flush(conn);
-            return;
-        }
-    }
 
     static xcb_atom_t skip_types[7];
     static int skip_types_inited = 0;
@@ -1596,7 +1597,20 @@ void map_request(xcb_map_request_event_t *e) {
     client *oc = cur;
     cur = list->prev;
 
-    if (nx + ny == 0) win_center((Arg){0});
+    if (transient_for != XCB_NONE) {
+        int px = 0, py = 0; unsigned int pw = 0, ph = 0;
+        win_size(transient_for, &px, &py, &pw, &ph);
+        if (pw && ph) {
+            int cx = px + ((int)pw - (int)nw) / 2;
+            int cy = py + ((int)ph - (int)nh) / 2;
+            client_move(cur, cx, cy);
+        } else if (nx + ny == 0) {
+            win_center((Arg){0});
+        }
+    } else if (nx + ny == 0) {
+        win_center((Arg){0});
+    }
+
 
     if (cur->titlebar) titlebar_update(cur);
     if (cur->border) border_draw(cur);
@@ -1621,6 +1635,10 @@ void run(const Arg arg) {
     setsid();
     execvp((char *)arg.com[0], (char **)arg.com);
     exit(1);
+}
+
+void quit(const Arg arg) {
+	running = 0;
 }
 
 void input_grab(xcb_window_t rootw) {
@@ -1817,7 +1835,7 @@ int main(void) {
     xcb_flush(conn);
 
     xcb_generic_event_t *ev;
-    while ((ev = xcb_wait_for_event(conn))) {
+    while (running && (ev = xcb_wait_for_event(conn))) {
         uint8_t type = ev->response_type & ~0x80;
 
         if ((type == XCB_MAP_NOTIFY || type == XCB_CONFIGURE_NOTIFY) && hud_win) {

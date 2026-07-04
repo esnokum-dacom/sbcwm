@@ -97,6 +97,7 @@ void notify_motion(xcb_motion_notify_event_t *e);
 void notify_screen_change(xcb_randr_screen_change_notify_event_t *e);
 
 void run(const Arg arg);
+void quit(const Arg arg);
 void win_add(xcb_window_t w);
 void win_center(const Arg arg);
 void win_del(xcb_window_t w);

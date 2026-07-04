@@ -70,6 +70,8 @@ static struct key keys[] = {
     { MOD|ShiftMask,   XK_Return, run,             {.com = mterm}  },
     { MOD|ShiftMask,   XK_s,      run,             {.com = scrot}  },
 
+    { MOD|ShiftMask,   XK_q,      quit,            {0}		   },
+
     { 0, XF86XK_AudioLowerVolume, run,             {.com = voldown} },
     { 0, XF86XK_AudioRaiseVolume, run,             {.com = volup}   },
     { 0, XF86XK_AudioMute,        run,             {.com = volmute} },
