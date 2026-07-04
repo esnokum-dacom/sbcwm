@@ -2,7 +2,7 @@
   <h1>ScbWM (SOWM C binding)</h1>
     <div>
       <p align="left">SCBWM is a window manager based on <a href="https://github.com/esnokum-dacom/SOWM-Plus-Plus"> SOWM++</a>, but SCBWM is written in XCB (X C Binding). XCB is more lightweight than the Xlib default; there is not too much difference, is the same code but written in XCB</p>
-      <a href="https://github.com/esnokum-dacom/sbcwm/blob/main/sbcwm.png" width="59%" align="right"></a>
+      <a href="https://github.com/esnokum-dacom/sbcwm"><img src="https://github.com/esnokum-dacom/sbcwm/blob/main/sbcwm.png" width="59%" align="right"></a>
     </div>
 </div> 
 
