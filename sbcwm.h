@@ -137,7 +137,7 @@ void border_draw(client *c);
 void border_del(client *c);
 
 unsigned long hex_to_xcolor(const char *hex);
-void load_colors_if_needed(void);
+void load_colors(void);
 void xcolor_to_xftcolor(unsigned long pixel, XftColor *xft);
 
 void client_move(client *c, int x, int y);

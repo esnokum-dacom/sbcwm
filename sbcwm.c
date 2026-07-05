@@ -18,6 +18,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <errno.h>
 
 #include "sbcwm.h"
 #include "config.h"
@@ -68,8 +71,8 @@ static xcb_window_t minimap_win[MAX_MONITORS] = {0};
 static xcb_pixmap_t minimap_pix[MAX_MONITORS] = {0};
 static xcb_gcontext_t minimap_gc = 0;
 
-static volatile sig_atomic_t reload_colors = 1;
-static ColorScheme cached_colors;
+static volatile sig_atomic_t reload_colors = 0;
+static ColorScheme cols;
 
 static int randr_event_base = 0;
 
@@ -186,17 +189,14 @@ unsigned long hex_to_xcolor(const char *hex) {
     return color.pixel;
 }
 
-void load_colors_if_needed(void) {
-    if (!reload_colors) return;
-    reload_colors = 0;
-
+void load_colors(void) {
     unsigned long fg = hex_to_xcolor("#ffffff");
     unsigned long bg = hex_to_xcolor("#151515");
 
-    cached_colors.background = bg;
-    cached_colors.foreground = fg;
+    cols.background = bg;
+    cols.foreground = fg;
     for (int i = 0; i < 16; i++)
-        cached_colors.cs[i] = (i == 0) ? bg : fg;
+        cols.cs[i] = (i == 0) ? bg : fg;
 
     char path[256];
     const char *home = getenv("HOME");
@@ -209,12 +209,12 @@ void load_colors_if_needed(void) {
     int i = 0;
     while (fgets(line, sizeof(line), f) && i < 16) {
         line[strcspn(line, "\n")] = 0;
-        cached_colors.cs[i++] = hex_to_xcolor(line);
+        cols.cs[i++] = hex_to_xcolor(line);
     }
     fclose(f);
 
-    cached_colors.background = cached_colors.cs[0];
-    cached_colors.foreground = cached_colors.cs[15];
+    cols.background = cols.cs[0];
+    cols.foreground = cols.cs[15];
 }
 
 void xcolor_to_xftcolor(unsigned long pixel, XftColor *xft) {
@@ -515,8 +515,6 @@ void titlebar_draw(client *c) {
 
     if (!c || !c->titlebar) return;
 
-    load_colors_if_needed();
-
     unsigned int tw, th;
     int tx, ty;
     win_size(c->titlebar, &tx, &ty, &tw, &th);
@@ -526,12 +524,15 @@ void titlebar_draw(client *c) {
     xcb_gcontext_t tgc = xcb_generate_id(conn);
     xcb_create_gc(conn, tgc, tpix, 0, NULL);
 
-    XftColor color;
-    xcolor_to_xftcolor(cached_colors.foreground, &color);
+    load_colors();
+    signal(SIGUSR1, handle_sigusr1);
 
-    unsigned long bg = XR_COLORS
-        ? ((c == cur) ? cached_colors.cs[1] : cached_colors.background)
-        : ((c == cur) ? 0x3a3a3a : 0x000000);
+    XftColor color;
+    xcolor_to_xftcolor(cols.foreground, &color);
+
+    unsigned long bg;
+
+    if (XR_COLORS) { bg = (c == cur) ? cols.cs[2] : 0x000000; } else { bg = (c == cur) ? cols.cs[2] : 0x000000; }
 
     uint32_t fgc = (uint32_t)bg;
     xcb_change_gc(conn, tgc, XCB_GC_FOREGROUND, &fgc);
@@ -637,7 +638,8 @@ xcb_window_t border_create(client *c) {
 void border_draw(client *c) {
     if (!c || !c->border) return;
 
-    load_colors_if_needed();
+    load_colors();
+    signal(SIGUSR1, handle_sigusr1);
 
     unsigned int tw, th;
     int tx, ty;
@@ -651,9 +653,9 @@ void border_draw(client *c) {
     xcb_gcontext_t tgc = xcb_generate_id(conn);
     xcb_create_gc(conn, tgc, tpix, 0, NULL);
 
-    unsigned long bg = XR_COLORS
-        ? ((c == cur) ? cached_colors.cs[1] : cached_colors.background)
-        : ((c == cur) ? 0x3a3a3a : 0x000000);
+    unsigned long bg;
+
+    if (XR_COLORS) { bg = (c == cur) ? cols.cs[2] : 0x000000; } else { bg = (c == cur) ? cols.cs[2] : 0x000000; }
 
     uint32_t fgc = (uint32_t)bg;
     xcb_change_gc(conn, tgc, XCB_GC_FOREGROUND, &fgc);
