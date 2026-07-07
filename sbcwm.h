@@ -4,6 +4,7 @@
 #include <X11/Xft/Xft.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <xcb/xproto.h>
 
 #define MAX_MONITORS 8
 #define TITLEBAR_HEIGHT 25
@@ -32,53 +33,58 @@ typedef struct {
 } Arg;
 
 struct key {
-  unsigned int  mod;
-  xcb_keysym_t  keysym;
-  void        (*function)(const Arg arg);
-  const Arg     arg;
+    unsigned int  mod;
+    xcb_keysym_t  keysym;
+    void        (*function)(const Arg arg);
+    const Arg     arg;
 };
 
+typedef struct {
+    xcb_window_t border;
+    xcb_window_t titlebar;
+} decorations;
+
 typedef struct client {
-  struct client *next, *prev;
-  xcb_window_t w;
-  xcb_window_t titlebar;
-  xcb_window_t border;
-  int mon;
-  int f;
-  int wx, wy;
-  unsigned int ww, wh;
-  int x, y;
-  int width, height;
-  int oldx, oldy, oldwidth, oldheight;
-  int basew, baseh, incw, inch, maxw, maxh, minw, minh;
-  float mina, maxa;
-  float cx, cy;
+    struct client *next, *prev;
+    xcb_window_t w;
+    xcb_window_t decs;
+    decorations dec;
+    int mon;
+    int f;
+    int wx, wy;
+    unsigned int ww, wh;
+    int x, y;
+    int width, height;
+    int oldx, oldy, oldwidth, oldheight;
+    int basew, baseh, incw, inch, maxw, maxh, minw, minh;
+    float mina, maxa;
+    float cx, cy;
 } client;
 
 typedef struct {
-  float pan_x[MAX_MONITORS];
-  float pan_y[MAX_MONITORS];
+    float pan_x[MAX_MONITORS];
+    float pan_y[MAX_MONITORS];
 } canvas_state;
 
 typedef struct {
-  int x, y, w, h;
+    int x, y, w, h;
 } MonitorInfo;
 
 typedef struct {
-  int x, y;
-  int tx, ty;
-  int active;
+    int x, y;
+    int tx, ty;
+    int active;
 } MinimapState;
 
 typedef struct {
-  int w, h;
-  int x, y;
+    int w, h;
+    int x, y;
 } ButtonTb;
 
 typedef struct {
-  unsigned long cs[16];
-  unsigned long background;
-  unsigned long foreground;
+    unsigned long cs[16];
+    unsigned long background;
+    unsigned long foreground;
 } ColorScheme;
 
 void button_press(xcb_button_press_event_t *e);
@@ -103,6 +109,7 @@ void win_center(const Arg arg);
 void win_del(xcb_window_t w);
 void win_fs(const Arg arg);
 void win_focus(client *c);
+void client_restack(client *c);
 void titlebar_focus(xcb_window_t w);
 void win_kill(const Arg arg);
 void win_prev(const Arg arg);
@@ -139,6 +146,10 @@ void border_del(client *c);
 unsigned long hex_to_xcolor(const char *hex);
 void load_colors(void);
 void xcolor_to_xftcolor(unsigned long pixel, XftColor *xft);
+
+
+xcb_window_t dec_params(client *c);
+void decors(client *c, uint8_t tb_, uint8_t bd_);
 
 void client_move(client *c, int x, int y);
 void updatesizehints(client *c);

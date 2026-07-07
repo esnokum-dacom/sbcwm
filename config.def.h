@@ -11,7 +11,7 @@
 #define ROUND_CORNERS 0
 
 // Title bar
-#define TITLEBAR 1
+#define TITLEBAR    1
 
 // BORDER
 
@@ -27,7 +27,7 @@
 // Wal colors (Xresources)
 #define XR_COLORS  1
 
-static const char *fonts[] = { "Terminus:style=Regular:pixelsize=12:antialias=false" };
+static const char *fonts[] = { "Terminus:style=Regular:pixelsize=16:antialias=false" };
 static const char *fontb[] = { "FiraMonoNerdFont:style=Regular:pixelsize=20:antialias=false" };
 
 const FcChar8 *close_sym = (FcChar8 *)"";
