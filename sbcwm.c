@@ -1217,11 +1217,16 @@ void win_del(xcb_window_t w) {
     client *x = NULL;
     for win if (c->w == w) x = c;
     if (!list || !x) return;
+    
     if (x->titlebar) titlebar_del(x);
+    
     if (x->prev == x) list = NULL;
     if (list == x)    list = x->next;
     if (x->next) x->next->prev = x->prev;
     if (x->prev) x->prev->next = x->next;
+    
+    if (x == cur) cur = NULL;
+    
     free(x);
     xcb_flush(conn);
 }
