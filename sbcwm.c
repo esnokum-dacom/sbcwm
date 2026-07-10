@@ -87,7 +87,7 @@ static xcb_atom_t net_supported, net_wm_window_type, net_wm_window_type_dock,
                   net_wm_strut, net_wm_strut_partial, net_current_desktop,
                   net_supporting_wm_check, net_wm_name, net_wm_visible_name,
                   net_active_window, ewmh_utf8_string, wm_delete_window,
-                  wm_protocols, wm_normal_hints_atom;
+                  wm_protocols, wm_normal_hints_atom, net_client_list_stacking;
 
 static int strut[4] = {0, 0, 0, 0};
 static long mm_last_update_ms = 0;
@@ -194,9 +194,7 @@ unsigned long hex_to_xcolor(const char *hex) {
 
 void load_colors(void) {
     unsigned long fg = hex_to_xcolor("#ffffff");
-    unsigned long bg = hex_to_xcolor("#151515");
-
-    cols.background = bg;
+    unsigned long bg = hex_to_xcolor("#151515"); cols.background = bg;
     cols.foreground = fg;
     for (int i = 0; i < 16; i++)
         cols.cs[i] = (i == 0) ? bg : fg;
@@ -664,6 +662,12 @@ void client_move(client *c, int x, int y) {
     uint32_t values[2] = { (uint32_t)x, (uint32_t)y };
     xcb_configure_window(conn, c->w, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, values);
 
+    uint32_t vstm[2] = { cur->w, XCB_STACK_MODE_ABOVE };
+    xcb_configure_window(conn, cur->w, XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE, vstm);
+
+    uint32_t vst[2] = { c->w, XCB_STACK_MODE_BELOW };
+    xcb_configure_window(conn, c->w, XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE, vst);
+
     if (c->titlebar) {
         uint32_t tv[2] = { (uint32_t)x, (uint32_t)(y - TITLEBAR_HEIGHT) };
         xcb_configure_window(conn, c->titlebar, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, tv);
@@ -700,6 +704,30 @@ void update_borders(void) {
         xcb_change_property(conn, XCB_PROP_MODE_REPLACE, root, net_active_window, XCB_ATOM_WINDOW, 32, 1, &w);
     }
     xcb_flush(conn);
+    update_client_list_stacking();
+}
+
+void update_client_list_stacking(void) {
+    xcb_query_tree_cookie_t qc = xcb_query_tree(conn, root);
+    xcb_query_tree_reply_t *qr = xcb_query_tree_reply(conn, qc, NULL);
+    if (!qr) return;
+ 
+    xcb_window_t *children = xcb_query_tree_children(qr);
+    int nchild = xcb_query_tree_children_length(qr);
+ 
+    xcb_window_t *stack = malloc(sizeof(xcb_window_t) * (size_t)nchild);
+    if (stack) {
+        int n = 0;
+        for (int i = 0; i < nchild; i++)
+            for win
+                if (c->w == children[i]) { stack[n++] = c->w; break; }
+ 
+        xcb_change_property(conn, XCB_PROP_MODE_REPLACE, root, net_client_list_stacking,
+                             XCB_ATOM_WINDOW, 32, (uint32_t)n, stack);
+        free(stack);
+        xcb_flush(conn);
+    }
+    free(qr);
 }
 
 void configure(client *c) {
@@ -917,14 +945,24 @@ void canvas_reset(const Arg arg) {
 
 void win_focus(client *c) {
     client *prev = cur;
+
+    if (!c)
+        c = list ? list->prev : NULL;
+
     cur = c;
-    xcb_set_input_focus(conn, XCB_INPUT_FOCUS_PARENT, cur->w, XCB_CURRENT_TIME);
-    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, root, net_active_window,
-                         XCB_ATOM_WINDOW, 32, 1, &cur->w);
-    if (prev && prev != cur) {
-        titlebar_draw(prev);
+
+    if (c) {
+        xcb_set_input_focus(conn, XCB_INPUT_FOCUS_PARENT, cur->w, XCB_CURRENT_TIME);
+	titlebar_draw(cur);
+        xcb_change_property(conn, XCB_PROP_MODE_REPLACE, root, net_active_window,
+                             XCB_ATOM_WINDOW, 32, 1, &cur->w);
+    } else {
+        xcb_set_input_focus(conn, XCB_INPUT_FOCUS_POINTER_ROOT, root, XCB_CURRENT_TIME);
+        xcb_delete_property(conn, root, net_active_window);
     }
-    titlebar_draw(cur);
+
+    if (prev && prev != cur) titlebar_draw(prev);
+
     xcb_flush(conn);
     update_borders();
 }
@@ -998,18 +1036,44 @@ void win_next(const Arg arg) {
     if (c && c != cur && c->mon == m) canvas_focus(c);
 }
 
-void notify_destroy(xcb_destroy_notify_event_t *e) {
+void notify_destroy(xcb_destroy_notify_event_t *gen_e) {
+    xcb_destroy_notify_event_t *e = (xcb_destroy_notify_event_t *)gen_e;
+
     win_del(e->window);
     minimap_update();
-    titlebar_update(cur);
 
-    if (list) win_focus(list->prev);
-    else {
-        cur = NULL;
-        xcb_set_input_focus(conn, XCB_INPUT_FOCUS_POINTER_ROOT, root, XCB_CURRENT_TIME);
-    }
+    win_focus(NULL);
+    titlebar_update(cur);
 }
 
+void client_message(xcb_generic_event_t *gen_e) {
+    xcb_client_message_event_t *e = (xcb_client_message_event_t *)gen_e;
+    
+    if (e->type == wm_protocols && e->data.data32[0] == wm_delete_window) {
+        win_del(e->window);
+    }
+    // TO_DO; _NET_WM_STATE fullscreen requests here 
+}
+
+void configure_notify(xcb_configure_notify_event_t *e) {
+    if (e->window == root) {
+        sw = e->width;
+        sh = e->height;
+        monitors_refresh();
+        canvas_apply_all();
+        return;
+    }
+ 
+    update_client_list_stacking();
+}
+
+void focusin(xcb_focus_in_event_t *e) {
+    if (e->mode == XCB_NOTIFY_MODE_GRAB || e->mode == XCB_NOTIFY_MODE_UNGRAB)
+        return;
+    if (cur && e->event != cur->w)
+        xcb_set_input_focus(conn, XCB_INPUT_FOCUS_PARENT, cur->w, XCB_CURRENT_TIME);
+}
+ 
 void notify_unmap(xcb_unmap_notify_event_t *e) {
     xcb_window_t w = e->window;
 
@@ -1019,14 +1083,13 @@ void notify_unmap(xcb_unmap_notify_event_t *e) {
     if (!managed) return;
 
     win_del(w);
-    if (list) win_focus(list->prev);
-    else {
-        cur = NULL;
-        xcb_set_input_focus(conn, XCB_INPUT_FOCUS_POINTER_ROOT, root, XCB_CURRENT_TIME);
-    }
+    win_focus(NULL);
 }
 
 void notify_enter(xcb_enter_notify_event_t *e) {
+    if (e->mode != XCB_NOTIFY_MODE_NORMAL || e->detail == XCB_NOTIFY_DETAIL_INFERIOR)
+        return;
+
     for win
         if (c->w == e->event) {
             win_focus(c);
@@ -1057,36 +1120,36 @@ void notify_motion(xcb_motion_notify_event_t *e) {
         canvas_apply_all();
         return;
     }
-
+ 
     if (!cur || !drag_subwindow || cur->f) return;
-
+ 
     int xd = e->root_x - drag_root_x;
     int yd = e->root_y - drag_root_y;
-
+ 
     if (drag_button == XCB_BUTTON_INDEX_1) {
         int new_sx = cur->wx + xd;
         int new_sy = cur->wy + yd;
-
+ 
         int cenx = new_sx + (int)(cur->ww / 2);
         int ceny = new_sy + (int)(cur->wh / 2);
-
+ 
 	for (int i = 0; i < n_mons; i++) {
 	    if (cenx >= mons[i].x && cenx < mons[i].x + mons[i].w &&
 		ceny >= mons[i].y && ceny < mons[i].y + mons[i].h) {
 		cur->mon = i;
 		    break;
 	    }
-
+ 
 	}
-
+ 
         client_move(cur, new_sx, new_sy);
-
+ 
         if (cur->titlebar) {
             uint32_t stack = XCB_STACK_MODE_ABOVE;
             xcb_configure_window(conn, cur->titlebar, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
         }
         minimap_update();
-
+ 
         int m = cur->mon;
         cur->cx = (float)new_sx + canvas.pan_x[m];
         cur->cy = (float)new_sy + canvas.pan_y[m];
@@ -1102,9 +1165,10 @@ void key_press(xcb_key_press_event_t *e) {
             keys[i].function(keys[i].arg);
 }
 
-void button_press(xcb_button_press_event_t *e) {
+void button_press(xcb_button_press_event_t *gen_e) {
+    xcb_button_press_event_t *e = (xcb_button_press_event_t *)gen_e;
     if (!cur) return;
-
+ 
     if (e->detail == XCB_BUTTON_INDEX_2) {
         pan_active   = 1;
         pan_mon      = mon_at_ptr();
@@ -1114,42 +1178,42 @@ void button_press(xcb_button_press_event_t *e) {
         pan_origin_y = canvas.pan_y[pan_mon];
         return;
     }
-
+ 
     if (is_titlebar(e->event) && !(e->state & MOD)) {
         client *c = client_from_titlebar(e->event);
         if (!c) return;
-
+ 
         unsigned int tw, th;
         win_size(c->titlebar, NULL, NULL, &tw, &th);
-
+ 
         int btn_w  = 22;
         int btn_x = (int)tw - 20;
         int btn_f  = btn_x - btn_w - 4;
-
+ 
         if (e->detail == XCB_BUTTON_INDEX_1 && e->event_x >= btn_x) { win_kill((Arg){0}); return; }
         if (e->detail == XCB_BUTTON_INDEX_1 && e->event_x >= btn_f && e->event_x < btn_x) { win_fs((Arg){0}); return; }
-
+ 
         win_focus(c);
         win_size(c->w, &c->wx, &c->wy, &c->ww, &c->wh);
         drag_subwindow = c->w;
         drag_button = e->detail;
         drag_root_x = e->root_x;
         drag_root_y = e->root_y;
-
+ 
         uint32_t stack = XCB_STACK_MODE_ABOVE;
         xcb_configure_window(conn, c->w, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
         xcb_configure_window(conn, c->titlebar, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
         xcb_flush(conn);
         return;
     }
-
+ 
     if (!e->child) return;
-
+ 
     client *target = NULL;
     for win {
         if (c->w == e->child || c->titlebar == e->child) { target = c; break; }
     }
-
+ 
     if (target) {
         win_focus(target);
         uint32_t stack = XCB_STACK_MODE_ABOVE;
@@ -1162,12 +1226,12 @@ void button_press(xcb_button_press_event_t *e) {
         xcb_configure_window(conn, e->child, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
         if (cur && cur->titlebar) xcb_configure_window(conn, cur->titlebar, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
     }
-
+ 
     drag_subwindow = e->child;
     drag_button = e->detail;
     drag_root_x = e->root_x;
     drag_root_y = e->root_y;
-
+ 
     xcb_flush(conn);
 }
 
@@ -1456,26 +1520,26 @@ void expose_event(xcb_expose_event_t *e) {
 
 void map_request(xcb_map_request_event_t *e) {
     xcb_window_t w = e->window;
-
+ 
     xcb_get_window_attributes_reply_t *wa =
         xcb_get_window_attributes_reply(conn, xcb_get_window_attributes(conn, w), NULL);
     if (!wa || wa->override_redirect) { free(wa); return; }
     free(wa);
-
+ 
     if (win_is_dock(w)) {
         update_struts(w);
         xcb_map_window(conn, w);
         xcb_flush(conn);
         return;
     }
-
+ 
     for win
         if (c->w == w) { xcb_map_window(conn, w); xcb_flush(conn); return; }
-
-
+ 
+ 
     xcb_window_t transient_for = XCB_NONE;
     xcb_icccm_get_wm_transient_for_reply(conn, xcb_icccm_get_wm_transient_for(conn, w), &transient_for, NULL);
-
+ 
     static xcb_atom_t skip_types[7];
     static int skip_types_inited = 0;
     if (!skip_types_inited) {
@@ -1488,7 +1552,7 @@ void map_request(xcb_map_request_event_t *e) {
         skip_types[6] = get_atom("_NET_WM_WINDOW_TYPE_MENU");
         skip_types_inited = 1;
     }
-
+ 
     xcb_get_property_cookie_t ck = xcb_get_property(conn, 0, w, net_wm_window_type, XCB_ATOM_ATOM, 0, 1);
     xcb_get_property_reply_t *r = xcb_get_property_reply(conn, ck, NULL);
     if (r && xcb_get_property_value_length(r) > 0) {
@@ -1503,21 +1567,21 @@ void map_request(xcb_map_request_event_t *e) {
         }
     }
     free(r);
-
+ 
     uint32_t evmask = XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_ENTER_WINDOW |
-                       XCB_EVENT_MASK_PROPERTY_CHANGE;
+                       XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_FOCUS_CHANGE;
     xcb_change_window_attributes(conn, w, XCB_CW_EVENT_MASK, &evmask);
-
+ 
     uint32_t bw = WBORDER;
     xcb_configure_window(conn, w, XCB_CONFIG_WINDOW_BORDER_WIDTH, &bw);
-
+ 
     int nx = 0, ny = 0; unsigned int nw = 0, nh = 0;
     win_size(w, &nx, &ny, &nw, &nh);
     win_add(w);
-
+ 
     client *oc = cur;
     cur = list->prev;
-
+ 
     if (transient_for != XCB_NONE) {
         int px = 0, py = 0; unsigned int pw = 0, ph = 0;
         win_size(transient_for, &px, &py, &pw, &ph);
@@ -1531,17 +1595,17 @@ void map_request(xcb_map_request_event_t *e) {
     } else if (nx + ny == 0) {
         win_center((Arg){0});
     }
-
-
+ 
+ 
     if (cur->titlebar) titlebar_update(cur);
-
+ 
     xcb_map_window(conn, w);
     minimap_update();
     cur = oc;
     win_focus(list->prev);
     xcb_flush(conn);
 }
-
+ 
 void mapping_notify(xcb_mapping_notify_event_t *e) {
     if (e->request == XCB_MAPPING_KEYBOARD || e->request == XCB_MAPPING_MODIFIER) {
         xcb_refresh_keyboard_mapping(keysyms, e);
@@ -1691,6 +1755,7 @@ int main(void) {
     wm_delete_window         = get_atom("WM_DELETE_WINDOW");
     wm_protocols             = get_atom("WM_PROTOCOLS");
     wm_normal_hints_atom     = XCB_ATOM_WM_NORMAL_HINTS;
+    net_client_list_stacking = get_atom("_NET_CLIENT_LIST_STACKING");
 
     canvas_atom_pan_x = get_atom("_CANVAS_PAN_X");
     canvas_atom_pan_y = get_atom("_CANVAS_PAN_Y");
@@ -1707,11 +1772,11 @@ int main(void) {
                          XCB_ATOM_WINDOW, 32, 1, &wmcheck);
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, wmcheck, net_wm_name,
                          ewmh_utf8_string, 8, 6, "sbcwm");
-
+ 
     xcb_atom_t supported[] = {
         net_supporting_wm_check, net_wm_name, net_wm_window_type,
         net_wm_window_type_dock, net_wm_strut, net_wm_strut_partial,
-        net_current_desktop,
+        net_current_desktop, net_client_list_stacking,
     };
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, root, net_supported,
                          XCB_ATOM_ATOM, 32, sizeof(supported) / sizeof(*supported), supported);
@@ -1766,6 +1831,7 @@ int main(void) {
         switch (type) {
             case XCB_BUTTON_PRESS:      button_press((xcb_button_press_event_t *)ev); break;
             case XCB_BUTTON_RELEASE:    button_release((xcb_button_release_event_t *)ev); break;
+	    case XCB_CONFIGURE_NOTIFY:  configure_notify((xcb_configure_notify_event_t *) ev); break;
             case XCB_CONFIGURE_REQUEST: configure_request((xcb_configure_request_event_t *)ev); break;
             case XCB_KEY_PRESS:         key_press((xcb_key_press_event_t *)ev); break;
             case XCB_EXPOSE:            expose_event((xcb_expose_event_t *)ev); break;
@@ -1775,6 +1841,8 @@ int main(void) {
             case XCB_UNMAP_NOTIFY:      notify_unmap((xcb_unmap_notify_event_t *)ev); break;
             case XCB_ENTER_NOTIFY:      notify_enter((xcb_enter_notify_event_t *)ev); break;
             case XCB_PROPERTY_NOTIFY:   notify_property((xcb_property_notify_event_t *)ev); break;
+	    case XCB_FOCUS_IN:		focusin((xcb_focus_in_event_t *) ev); break;
+	    case XCB_CLIENT_MESSAGE:	client_message((xcb_generic_event_t *) ev); break;
             case XCB_MOTION_NOTIFY: {
                 xcb_generic_event_t *next;
                 xcb_motion_notify_event_t *last = (xcb_motion_notify_event_t *)ev;
@@ -1795,6 +1863,7 @@ handle_non_motion:
                 switch (type) {
                     case XCB_BUTTON_PRESS:      button_press((xcb_button_press_event_t *)ev); break;
                     case XCB_BUTTON_RELEASE:    button_release((xcb_button_release_event_t *)ev); break;
+		    case XCB_CONFIGURE_NOTIFY:  configure_notify((xcb_configure_notify_event_t *) ev); break;
                     case XCB_CONFIGURE_REQUEST: configure_request((xcb_configure_request_event_t *)ev); break;
                     case XCB_KEY_PRESS:         key_press((xcb_key_press_event_t *)ev); break;
                     case XCB_EXPOSE:            expose_event((xcb_expose_event_t *)ev); break;
@@ -1804,6 +1873,8 @@ handle_non_motion:
                     case XCB_UNMAP_NOTIFY:      notify_unmap((xcb_unmap_notify_event_t *)ev); break;
                     case XCB_ENTER_NOTIFY:      notify_enter((xcb_enter_notify_event_t *)ev); break;
                     case XCB_PROPERTY_NOTIFY:   notify_property((xcb_property_notify_event_t *)ev); break;
+		    case XCB_FOCUS_IN:		focusin((xcb_focus_in_event_t *) ev); break;
+		    case XCB_CLIENT_MESSAGE:	client_message((xcb_generic_event_t *) ev); break;
                     default: break;
                 }
                 break;

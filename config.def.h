@@ -1,17 +1,19 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include "config.h"
 #include "sbcwm.h"
 #include <X11/X.h>
 #include <X11/XF86keysym.h>
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 
 #define MOD           Mod4Mask
 #define PAN_STEP      120
 #define ROUND_CORNERS 0
 
 // Title bar
-#define TITLEBAR    1
+#define TITLEBAR    0
 
 // BORDER
 
@@ -46,6 +48,10 @@ static const char *voldown[] = {"amixer", "sset", "Master", "5%-", 0};
 static const char *volup[]   = {"amixer", "sset", "Master", "5%+", 0};
 static const char *volmute[] = {"amixer", "sset", "Master", "toggle", 0};
 
+static const char *zoomin[]  = {"sbcompctl", "zoom", "+0.1", 0};
+static const char *zoomout[] = {"sbcompctl", "zoom", "-0.1", 0};
+static const char *zoomreset[] = {"sbcompctl", "zoom", "1", 0};
+
 static struct key keys[] = {
     { MOD | ShiftMask, XK_c,      win_kill,        {0}             },
     { MOD,             XK_c,      win_center,      {0}             },
@@ -71,6 +77,10 @@ static struct key keys[] = {
     { MOD|ShiftMask,   XK_s,      run,             {.com = scrot}  },
 
     { MOD|ShiftMask,   XK_q,      quit,            {0}		   },
+
+    { MOD,	       XK_F2,	  run,             {.com = zoomout}},
+    { MOD,	       XK_F1,	  run,             {.com = zoomin} },
+    { MOD,	       XK_r,	  run,             {.com = zoomreset}},
 
     { 0, XF86XK_AudioLowerVolume, run,             {.com = voldown} },
     { 0, XF86XK_AudioRaiseVolume, run,             {.com = volup}   },

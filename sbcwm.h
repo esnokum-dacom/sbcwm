@@ -45,6 +45,7 @@ typedef struct client {
   int mon;
   int f;
   int wx, wy;
+  int nvfc, isug;
   unsigned int ww, wh;
   int x, y;
   int width, height;
@@ -80,7 +81,7 @@ typedef struct {
   unsigned long foreground;
 } ColorScheme;
 
-void button_press(xcb_button_press_event_t *e);
+void button_press(xcb_button_press_event_t *gen_e);
 void button_release(xcb_button_release_event_t *e);
 void configure_request(xcb_configure_request_event_t *e);
 void input_grab(xcb_window_t root);
@@ -90,10 +91,12 @@ void notify_unmap(xcb_unmap_notify_event_t *e);
 void map_request(xcb_map_request_event_t *e);
 void expose_event(xcb_expose_event_t *e);
 void mapping_notify(xcb_mapping_notify_event_t *e);
-void notify_destroy(xcb_destroy_notify_event_t *e);
-void notify_enter(xcb_enter_notify_event_t *e);
 void notify_motion(xcb_motion_notify_event_t *e);
 void notify_screen_change(xcb_randr_screen_change_notify_event_t *e);
+void notify_destroy(xcb_destroy_notify_event_t *gen_e);
+void notify_enter(xcb_enter_notify_event_t *e);
+void focusin(xcb_focus_in_event_t *e);
+void client_message(xcb_generic_event_t *gen_e);
 
 void run(const Arg arg);
 void quit(const Arg arg);
@@ -141,12 +144,15 @@ void client_move(client *c, int x, int y);
 void updatesizehints(client *c);
 void resizeclient(client *c, int w, int h);
 void configure(client *c);
+void configure_notify(xcb_configure_notify_event_t *e);
 void client_resize(client *c, unsigned int w, unsigned int h);
 int applysizehints(client *c, int *w, int *h);
 char *copystr(const char *s);
 void win_size(xcb_window_t w, int *x, int *y, unsigned int *wd, unsigned int *ht);
 
 void handle_sigusr1(int sig);
+
+void update_client_list_stacking(void);
 
 void monitors_refresh(void);
 int mon_at_ptr(void);
