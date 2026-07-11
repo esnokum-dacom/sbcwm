@@ -18,7 +18,7 @@
 // BORDER
 
 #define BORDER	    1
-#define BORDER_W    3
+#define BORDER_W    1
 
 // HUD
 #define UI_HUD 1
@@ -48,6 +48,8 @@ static const char *voldown[] = {"amixer", "sset", "Master", "5%-", 0};
 static const char *volup[]   = {"amixer", "sset", "Master", "5%+", 0};
 static const char *volmute[] = {"amixer", "sset", "Master", "toggle", 0};
 
+static const char *tabmen[] = {"sbtb", 0};
+
 static const char *zoomin[]  = {"sbcompctl", "zoom", "+0.1", 0};
 static const char *zoomout[] = {"sbcompctl", "zoom", "-0.1", 0};
 static const char *zoomreset[] = {"sbcompctl", "zoom", "1", 0};
@@ -56,8 +58,8 @@ static struct key keys[] = {
     { MOD | ShiftMask, XK_c,      win_kill,        {0}             },
     { MOD,             XK_c,      win_center,      {0}             },
     { MOD,             XK_f,      win_fs,          {0}             },
-    { Mod1Mask,        XK_Tab,    win_next,        {0}             },
-    { Mod1Mask|ShiftMask, XK_Tab, win_prev,        {0}             },
+    { Mod1Mask,        XK_Tab,    run,		   {.com = tabmen}   },
+    { Mod1Mask|ShiftMask, XK_Tab, run,		   {.com = tabmen}   },
 
     { MOD,             XK_period, ws_focusnext,    {0}             },
     { MOD|ShiftMask,   XK_period, move_nextmon,    {0}             },

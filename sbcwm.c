@@ -51,7 +51,7 @@ static float pan_origin_x = 0;
 static float pan_origin_y = 0;
 static int   pan_mon      = 0;
 
-static int   hud_w = 320, hud_h = 30;
+static int   hud_w = 0, hud_h = 30;
 static int   hud_mon = -1;
 
 static int running = 1;
@@ -412,7 +412,8 @@ static void always_ot(void) {
 }
 
 static void hud_create(void) {
-    int hud_x = (sw - hud_w) / 2;
+    hud_w = sw / 2;
+    int hud_x = (sw - hud_w) / 1.4;
     int hud_y = 4;
 
     hud_win = xcb_generate_id(conn);
@@ -420,7 +421,11 @@ static void hud_create(void) {
     uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL |
                      XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK;
 
-    uint32_t values[] = { screen->black_pixel, 0, 1, XCB_EVENT_MASK_EXPOSURE };
+
+    uint32_t values[] = { screen->black_pixel, 0, 1, XCB_EVENT_MASK_EXPOSURE,
+    XCB_BACK_PIXMAP_NONE, 0,
+    XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_BUTTON_PRESS |
+    XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION };
     xcb_create_window(conn, XCB_COPY_FROM_PARENT, hud_win, root,
                        (int16_t)hud_x, (int16_t)hud_y, (uint16_t)hud_w, (uint16_t)hud_h, 0,
                        XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, mask, values);
@@ -1048,9 +1053,18 @@ void notify_destroy(xcb_destroy_notify_event_t *gen_e) {
 
 void client_message(xcb_generic_event_t *gen_e) {
     xcb_client_message_event_t *e = (xcb_client_message_event_t *)gen_e;
-    
+
     if (e->type == wm_protocols && e->data.data32[0] == wm_delete_window) {
         win_del(e->window);
+        return;
+    }
+
+    if (e->type == net_active_window) {
+        client *target = NULL;
+        for win
+            if (c->w == e->window) { target = c; break; }
+        if (target) canvas_focus(target);
+        return;
     }
     // TO_DO; _NET_WM_STATE fullscreen requests here 
 }
