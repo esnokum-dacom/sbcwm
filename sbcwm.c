@@ -51,7 +51,7 @@ static float pan_origin_x = 0;
 static float pan_origin_y = 0;
 static int   pan_mon      = 0;
 
-static int   hud_w = 0, hud_h = 30;
+static int   hud_w = 320, hud_h = 30;
 static int   hud_mon = -1;
 
 static int running = 1;
@@ -83,6 +83,7 @@ static MonitorInfo mons[MAX_MONITORS];
 static int         n_mons = 0;
 
 static xcb_atom_t canvas_atom_pan_x, canvas_atom_pan_y;
+static xcb_atom_t sbcwm_atom_monitor;
 static xcb_atom_t net_supported, net_wm_window_type, net_wm_window_type_dock,
                   net_wm_strut, net_wm_strut_partial, net_current_desktop,
                   net_supporting_wm_check, net_wm_name, net_wm_visible_name,
@@ -169,6 +170,13 @@ int mon_from_point(int px, int py) {
             py >= mons[i].y && py < mons[i].y + mons[i].h)
             return i;
     return 0;
+}
+
+static void set_client_monitor(client *c, int mon) {
+    c->mon = mon;
+    uint32_t m = (uint32_t)mon;
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, c->w, sbcwm_atom_monitor,
+                         XCB_ATOM_CARDINAL, 32, 1, &m);
 }
 
 int mon_at_ptr(void) {
@@ -412,8 +420,7 @@ static void always_ot(void) {
 }
 
 static void hud_create(void) {
-    hud_w = sw / 2;
-    int hud_x = (sw - hud_w) / 1.4;
+    int hud_x = (sw - hud_w) / 2;
     int hud_y = 4;
 
     hud_win = xcb_generate_id(conn);
@@ -421,11 +428,7 @@ static void hud_create(void) {
     uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL |
                      XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK;
 
-
-    uint32_t values[] = { screen->black_pixel, 0, 1, XCB_EVENT_MASK_EXPOSURE,
-    XCB_BACK_PIXMAP_NONE, 0,
-    XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_BUTTON_PRESS |
-    XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION };
+    uint32_t values[] = { screen->black_pixel, 0, 1, XCB_EVENT_MASK_EXPOSURE };
     xcb_create_window(conn, XCB_COPY_FROM_PARENT, hud_win, root,
                        (int16_t)hud_x, (int16_t)hud_y, (uint16_t)hud_w, (uint16_t)hud_h, 0,
                        XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, mask, values);
@@ -1150,7 +1153,7 @@ void notify_motion(xcb_motion_notify_event_t *e) {
 	for (int i = 0; i < n_mons; i++) {
 	    if (cenx >= mons[i].x && cenx < mons[i].x + mons[i].w &&
 		ceny >= mons[i].y && ceny < mons[i].y + mons[i].h) {
-		cur->mon = i;
+		set_client_monitor(cur, i);
 		    break;
 	    }
  
@@ -1259,7 +1262,7 @@ void win_add(xcb_window_t w) {
     if (!c) exit(1);
 
     c->w = w;
-    c->mon = mon_at_win(w);
+    set_client_monitor(c, mon_at_win(w));
 
     int sx = 0, sy = 0;
     unsigned int dw2, dh2;
@@ -1360,7 +1363,7 @@ void win_center(const Arg arg) {
 
     client_move(cur, sx, sy);
 
-    cur->mon = mon_at_win(cur->w);
+    set_client_monitor(cur, mon_at_win(cur->w));
     int m = cur->mon;
     cur->cx = (float)sx + canvas.pan_x[m];
     cur->cy = (float)sy + canvas.pan_y[m];
@@ -1718,7 +1721,7 @@ void move_nextmon(const Arg arg) {
         client_move(cur, new_sx, new_sy);
         minimap_update();
         titlebar_update(cur);
-        cur->mon = next;
+        set_client_monitor(cur, next);
         cur->cx = (float)new_sx + canvas.pan_x[next];
         cur->cy = (float)new_sy + canvas.pan_y[next];
     }
@@ -1773,6 +1776,17 @@ int main(void) {
 
     canvas_atom_pan_x = get_atom("_CANVAS_PAN_X");
     canvas_atom_pan_y = get_atom("_CANVAS_PAN_Y");
+    sbcwm_atom_monitor = get_atom("_SBCWM_MONITOR");
+
+    const xcb_query_extension_reply_t *randr_ext = xcb_get_extension_data(conn, &xcb_randr_id);
+    if (randr_ext && randr_ext->present) {
+        xcb_randr_query_version_cookie_t vck = xcb_randr_query_version(conn, 1, 5);
+        xcb_randr_query_version_reply_t *vr = xcb_randr_query_version_reply(conn, vck, NULL);
+        free(vr);
+
+        randr_event_base = randr_ext->first_event;
+        xcb_randr_select_input(conn, root, XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE);
+    }
 
     monitors_refresh();
     canvas_sync_to_root();
@@ -1811,12 +1825,6 @@ int main(void) {
     xcb_close_font(conn, cursor_font);
 
     input_grab(root);
-
-    const xcb_query_extension_reply_t *randr_ext = xcb_get_extension_data(conn, &xcb_randr_id);
-    if (randr_ext && randr_ext->present) {
-        randr_event_base = randr_ext->first_event;
-        xcb_randr_select_input(conn, root, XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE);
-    }
 
     if (UI_HUD) {
         if (CORDS) hud_create();

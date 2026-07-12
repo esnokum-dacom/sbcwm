@@ -49,6 +49,7 @@ static const char *volup[]   = {"amixer", "sset", "Master", "5%+", 0};
 static const char *volmute[] = {"amixer", "sset", "Master", "toggle", 0};
 
 static const char *tabmen[] = {"sbtb", 0};
+static const char *lazymenu[] = {"lm", 0};
 
 static const char *zoomin[]  = {"sbcompctl", "zoom", "+0.1", 0};
 static const char *zoomout[] = {"sbcompctl", "zoom", "-0.1", 0};
@@ -77,6 +78,8 @@ static struct key keys[] = {
     { MOD,             XK_w,      run,             {.com = xwall}  },
     { MOD|ShiftMask,   XK_Return, run,             {.com = mterm}  },
     { MOD|ShiftMask,   XK_s,      run,             {.com = scrot}  },
+
+    { MOD,	       XK_space,  run,             {.com = lazymenu}  },
 
     { MOD|ShiftMask,   XK_q,      quit,            {0}		   },
 
