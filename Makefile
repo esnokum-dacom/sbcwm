@@ -20,6 +20,6 @@ uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/sbcwm
 
 clean:
-	rm -f sbcwm *.o config.h
+	rm -f sbcwm *.o
 
 .PHONY: all install uninstall clean

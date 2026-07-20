@@ -11,7 +11,6 @@
 #include <X11/Xft/Xft.h>
 #include <X11/keysym.h>
 #include <X11/extensions/Xinerama.h>
-#include <math.h>
 #include <time.h>
 #include <signal.h>
 #include <stdio.h>
@@ -20,7 +19,6 @@
 #include <unistd.h>
 #include <poll.h>
 #include <fcntl.h>
-#include <errno.h>
 
 #include "sbcwm.h"
 #include "config.h"
@@ -38,7 +36,6 @@ static int mm_inited = 0;
 
 static XftFont *title_font  = NULL;
 static XftFont *button_font = NULL;
-static XftFont *hud_font    = NULL;
 
 static canvas_state canvas = { .pan_x = {0}, .pan_y = {0} };
 
@@ -50,9 +47,6 @@ static int   pan_start_y  = 0;
 static float pan_origin_x = 0;
 static float pan_origin_y = 0;
 static int   pan_mon      = 0;
-
-static int   hud_w = 320, hud_h = 30;
-static int   hud_mon = -1;
 
 static int running = 1;
 
@@ -69,7 +63,6 @@ static int                depth;
 static xcb_key_symbols_t *keysyms;
 
 static xcb_window_t root;
-static xcb_window_t hud_win = 0;
 static xcb_window_t minimap_win[MAX_MONITORS] = {0};
 static xcb_pixmap_t minimap_pix[MAX_MONITORS] = {0};
 static xcb_gcontext_t minimap_gc = 0;
@@ -417,87 +410,6 @@ static void always_ot(void) {
             uint32_t stack = XCB_STACK_MODE_ABOVE;
             xcb_configure_window(conn, minimap_win[i], XCB_CONFIG_WINDOW_STACK_MODE, &stack);
         }
-}
-
-static void hud_create(void) {
-    int hud_x = (sw - hud_w) / 2;
-    int hud_y = 4;
-
-    hud_win = xcb_generate_id(conn);
-
-    uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL |
-                     XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK;
-
-    uint32_t values[] = { screen->black_pixel, 0, 1, XCB_EVENT_MASK_EXPOSURE };
-    xcb_create_window(conn, XCB_COPY_FROM_PARENT, hud_win, root,
-                       (int16_t)hud_x, (int16_t)hud_y, (uint16_t)hud_w, (uint16_t)hud_h, 0,
-                       XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, mask, values);
-
-    xcb_map_window(conn, hud_win);
-
-    uint32_t stack = XCB_STACK_MODE_ABOVE;
-
-    xcb_configure_window(conn, hud_win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
-    xcb_flush(conn);
-}
-
-void hud_update(void) {
-    if (!hud_win) return;
-
-    if (!hud_font) hud_font = XftFontOpenName(dpy, scrno, *fonts);
-
-    int   mon = mon_at_ptr();
-    float px  = canvas.pan_x[mon];
-    float py  = canvas.pan_y[mon];
-
-    if (mon != hud_mon && mon < n_mons) {
-        int n_x = mons[mon].x + (mons[mon].w - hud_w) / 2;
-        int n_y = mons[mon].y + 4;
-        uint32_t values[] = { (uint32_t)n_x, (uint32_t)n_y };
-        xcb_configure_window(conn, hud_win, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, values);
-        hud_mon = mon;
-    }
-
-    char hud_text[256];
-    if (!cur) {
-        snprintf(hud_text, sizeof(hud_text), "X: %d Y: %d", (int)px, (int)py);
-    } else if (cur->f) {
-        char *wt = client_get_title(cur->w);
-        snprintf(hud_text, sizeof(hud_text), "%s is fullscreen", wt ? wt : "unknown");
-        free(wt);
-    } else {
-        snprintf(hud_text, sizeof(hud_text), "X: %d Y: %d", (int)px, (int)py);
-    }
-
-    xcb_clear_area(conn, 0, hud_win, 0, 0, 0, 0);
-    uint32_t stack = XCB_STACK_MODE_ABOVE;
-    xcb_configure_window(conn, hud_win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
-
-    xcb_flush(conn);
-
-    XftDraw *draw = XftDrawCreate(dpy, hud_win, visual, cmap);
-
-    if (hud_font) {
-        XRenderColor xr = { .red = 65535, .green = 65535, .blue = 65535, .alpha = 65535 };
-        XftColor color;
-        XftColorAllocValue(dpy, visual, cmap, &xr, &color);
-
-        XGlyphInfo ext;
-        XftTextExtentsUtf8(dpy, hud_font, (FcChar8 *)hud_text, (int)strlen(hud_text), &ext);
-
-        unsigned int hw, hh;
-        int hx, hy;
-        win_size(hud_win, &hx, &hy, &hw, &hh);
-
-        int x = ((int)hw - ext.xOff) / 2;
-        int y = (int)((hh + hud_font->ascent) / 2.2);
-
-        XftDrawStringUtf8(draw, &color, hud_font, x, y, (FcChar8 *)hud_text, (int)strlen(hud_text));
-        XftColorFree(dpy, visual, cmap, &color);
-    }
-    XftDrawDestroy(draw);
-
-    XFlush(dpy);
 }
 
 xcb_window_t titlebar_create(client *c) {
@@ -919,7 +831,6 @@ void canvas_apply_all(void) {
     }
 
     xcb_flush(conn);
-    hud_update();
     minimap_update();
     titlebar_update(cur);
     canvas_sync_to_root();
@@ -1342,7 +1253,7 @@ void win_kill(const Arg arg) {
 
 void win_center(const Arg arg) {
     (void)arg;
-    if (!cur) return;
+    if (!cur || cur->f) return;
 
     unsigned int ww_, wh_;
     win_size(cur->w, NULL, NULL, &ww_, &wh_);
@@ -1389,12 +1300,13 @@ void win_fs(const Arg arg) {
         if (TITLEBAR) {
             resizeclient(cur, mw, mh - TITLEBAR_HEIGHT);
             client_move(cur, mx, my + TITLEBAR_HEIGHT);
+            win_center((Arg){0});
         } else {
             resizeclient(cur, mw, mh);
             client_move(cur, mx, my);
+            win_center((Arg){0});
         }
 
-        hud_update();
         minimap_update();
         titlebar_update(cur);
         if (!TITLEBAR && cur->titlebar) xcb_unmap_window(conn, cur->titlebar);
@@ -1827,7 +1739,6 @@ int main(void) {
     input_grab(root);
 
     if (UI_HUD) {
-        if (CORDS) hud_create();
         minimap_create();
         minimap_update();
         if (!minimap) {
@@ -1844,11 +1755,6 @@ int main(void) {
     xcb_generic_event_t *ev;
     while (running && (ev = xcb_wait_for_event(conn))) {
         uint8_t type = ev->response_type & ~0x80;
-
-        if ((type == XCB_MAP_NOTIFY || type == XCB_CONFIGURE_NOTIFY) && hud_win) {
-            uint32_t stack = XCB_STACK_MODE_ABOVE;
-            xcb_configure_window(conn, hud_win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
-        }
 
         switch (type) {
             case XCB_BUTTON_PRESS:      button_press((xcb_button_press_event_t *)ev); break;
@@ -1911,7 +1817,6 @@ handle_non_motion:
 
         if (UI_HUD) {
             always_ot();
-            hud_update();
         }
     }
 

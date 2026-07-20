@@ -23,9 +23,6 @@
 // HUD
 #define UI_HUD 1
 
-// Coordinates 
-#define CORDS 1
-
 // Wal colors (Xresources)
 #define XR_COLORS  1
 
