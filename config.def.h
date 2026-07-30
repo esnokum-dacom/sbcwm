@@ -9,28 +9,7 @@
 #include <X11/Xutil.h>
 
 #define MOD           Mod4Mask
-#define PAN_STEP      120
 #define ROUND_CORNERS 0
-
-// Title bar
-#define TITLEBAR    0
-
-// BORDER
-
-#define BORDER	    1
-#define BORDER_W    1
-
-// HUD
-#define UI_HUD 1
-
-// Wal colors (Xresources)
-#define XR_COLORS  1
-
-static const char *fonts[] = { "Terminus:style=Regular:pixelsize=16:antialias=false" };
-static const char *fontb[] = { "FiraMonoNerdFont:style=Regular:pixelsize=20:antialias=false" };
-
-const FcChar8 *close_sym = (FcChar8 *)"";
-const FcChar8 *max_sym = (FcChar8 *)"󰝣";
 
 static const char *menu[]    = {"dmenu_run", 0};
 static const char *mterm[]   = {"st", 0};

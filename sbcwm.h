@@ -5,6 +5,8 @@
 #include <signal.h>
 #include <stdlib.h>
 
+#include "sbcct.h"
+
 #define MAX_MONITORS 8
 #define TITLEBAR_HEIGHT 25
 #define SPAWN_SEARCH_STEP 30
@@ -24,18 +26,12 @@
    (XCB_MOD_MASK_SHIFT | XCB_MOD_MASK_CONTROL | XCB_MOD_MASK_1 | XCB_MOD_MASK_2 | \
     XCB_MOD_MASK_3 | XCB_MOD_MASK_4 | XCB_MOD_MASK_5))
 
-typedef struct {
+typedef struct Arg Arg;
+struct Arg {
   const char **com;
   const int    i;
   const float  f;
   const xcb_window_t w;
-} Arg;
-
-struct key {
-  unsigned int  mod;
-  xcb_keysym_t  keysym;
-  void        (*function)(const Arg arg);
-  const Arg     arg;
 };
 
 typedef struct client {
@@ -80,6 +76,8 @@ typedef struct {
   unsigned long background;
   unsigned long foreground;
 } ColorScheme;
+
+const char *get_home(void);
 
 void button_press(xcb_button_press_event_t *gen_e);
 void button_release(xcb_button_release_event_t *e);
@@ -151,6 +149,9 @@ char *copystr(const char *s);
 void win_size(xcb_window_t w, int *x, int *y, unsigned int *wd, unsigned int *ht);
 
 void handle_sigusr1(int sig);
+void handle_sigusr2(int sig);
+
+void reload_config(void);
 
 void update_client_list_stacking(void);
 

@@ -17,14 +17,35 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pwd.h>
+#include <unistd.h>
 #include <poll.h>
 #include <fcntl.h>
 
+#include "sbcct.h"
 #include "sbcwm.h"
-#include "config.h"
+
+#define PAN_STEP      120
+
+#define TITLEBAR    0
+
+#define BORDER	    1
+#define BORDER_W    1
+
+#define UI_HUD 1
+
+#define XR_COLORS  1
 
 #define WBORDER (BORDER ? BORDER_W : 0)
 #define TB_CONTENT_H (TITLEBAR_HEIGHT - 2 * WBORDER)
+
+#define MOD Mod4Mask
+
+static const char *fonts[] = { "Terminus:style=Regular:pixelsize=16:antialias=false" };
+static const char *fontb[] = { "FiraMonoNerdFont:style=Regular:pixelsize=20:antialias=false" };
+
+const FcChar8 *close_sym = (FcChar8 *)"";
+const FcChar8 *max_sym = (FcChar8 *)"󰝣";
 
 static client *list = NULL;
 static client *cur  = NULL;
@@ -95,6 +116,8 @@ static uint16_t     drag_button    = 0;
 static int16_t      drag_root_x    = 0;
 static int16_t      drag_root_y    = 0;
 
+Config *cfg;
+
 static long now_ms(void) {
     struct timespec t_s;
     clock_gettime(CLOCK_MONOTONIC, &t_s);
@@ -106,6 +129,14 @@ char *copystr(const char *s) {
     char *p = malloc(len);
     if (p) memcpy(p, s, len);
     return p;
+}
+
+const char *get_home(void) {
+    const char *home = getenv("HOME");
+    if (home)
+        return home;
+    struct passwd *pw = getpwuid(getuid());
+    return pw ? pw->pw_dir : NULL;
 }
 
 void handle_sigusr1(int sig) { (void)sig; reload_colors = 1; }
@@ -1088,9 +1119,9 @@ void notify_motion(xcb_motion_notify_event_t *e) {
 
 void key_press(xcb_key_press_event_t *e) {
     xcb_keysym_t keysym = xcb_key_press_lookup_keysym(keysyms, e, 0);
-    for (unsigned int i = 0; i < sizeof(keys) / sizeof(*keys); ++i)
-        if (keys[i].keysym == keysym && mod_clean(keys[i].mod) == mod_clean(e->state))
-            keys[i].function(keys[i].arg);
+    for (unsigned int i = 0; i < (unsigned)cfg->nkeys; ++i)
+	if (cfg->keys[i].keysym == keysym && mod_clean(cfg->keys[i].mod) == mod_clean(e->state))
+	    cfg->keys[i].function(cfg->keys[i].arg);
 }
 
 void button_press(xcb_button_press_event_t *gen_e) {
@@ -1266,11 +1297,11 @@ void win_center(const Arg arg) {
         free(ptr);
     }
 
-    int total_w = (int)ww_ + WBORDER * 2;
-    int total_h = (int)wh_ + TITLEBAR_HEIGHT + WBORDER;
+    int total_w = (int)ww_;
+    int total_h = (int)wh_ + WBORDER;
 
     int sx = mx + (mw - total_w) / 2;
-    int sy = my + (mh - total_h) / 2 + TITLEBAR_HEIGHT;
+    int sy = my + (mh - total_h) / 2;
 
     client_move(cur, sx, sy);
 
@@ -1574,11 +1605,11 @@ void input_grab(xcb_window_t rootw) {
 
     xcb_ungrab_key(conn, XCB_GRAB_ANY, rootw, XCB_MOD_MASK_ANY);
 
-    for (unsigned int i = 0; i < sizeof(keys) / sizeof(*keys); i++) {
-        xcb_keycode_t *kc = xcb_key_symbols_get_keycode(keysyms, keys[i].keysym);
+    for (unsigned int i = 0; i < (unsigned)cfg->nkeys; i++) {
+        xcb_keycode_t *kc = xcb_key_symbols_get_keycode(keysyms, cfg->keys[i].keysym);
         if (!kc) continue;
         for (unsigned int j = 0; j < sizeof(modifiers) / sizeof(*modifiers); j++)
-            xcb_grab_key(conn, 1, rootw, (uint16_t)(keys[i].mod | modifiers[j]), kc[0],
+            xcb_grab_key(conn, 1, rootw, (uint16_t)(cfg->keys[i].mod | modifiers[j]), kc[0],
                          XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
         free(kc);
     }
@@ -1613,6 +1644,9 @@ void ws_focusnext(const Arg arg) {
 
 void move_nextmon(const Arg arg) {
     (void)arg;
+
+    if (!cur) return;
+
     xcb_query_pointer_reply_t *ptr = xcb_query_pointer_reply(conn, xcb_query_pointer(conn, root), NULL);
     if (!ptr) return;
     if (n_mons < 2) { free(ptr); return; }
@@ -1735,6 +1769,19 @@ int main(void) {
                              0, 0, 0, 0xffff, 0xffff, 0xffff);
     xcb_change_window_attributes(conn, root, XCB_CW_CURSOR, &cursor);
     xcb_close_font(conn, cursor_font);
+
+
+    char cfgdir[256];
+
+    snprintf(cfgdir, sizeof(cfgdir), "%s/.config/sbcwm/config.lua", get_home());
+
+    cfg = config_load(cfgdir);
+
+    if (!cfg) {
+	fprintf(stderr, "sbcwm: failed to load config, exiting\n");
+	exit(1);
+	return 1;
+    }
 
     input_grab(root);
 
