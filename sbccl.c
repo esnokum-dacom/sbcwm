@@ -38,6 +38,7 @@ static FuncEntry funcs[] = {
     {"run", run}, {"quit", quit}, {"canvas_pan_key", canvas_pan_key},
     {"canvas_reset", canvas_reset}, {"move_nextmon", move_nextmon},
     {"ws_focusnext", ws_focusnext}, {"toggle_minimap", toggle_minimap},
+    {"reload_config", reload_config},
 };
 
 static ModEntry mods[] = {
@@ -106,6 +107,13 @@ static void build_key(lua_State *L, int idx, struct key *k) {
     memcpy(&k->arg, &a, sizeof(Arg));
 }
 
+static int opt_int(lua_State *L, const char *key, int def) {
+    lua_getfield(L, -1, key);
+    int v = lua_isnumber(L, -1) ? (int)lua_tonumber(L, -1) : def;
+    lua_pop(L, 1);
+    return v;
+}
+
 Config *config_load(const char *path) {
     lua_State *L = luaL_newstate();
     luaL_openlibs(L);
@@ -118,9 +126,37 @@ Config *config_load(const char *path) {
 
     Config *cfg = malloc(sizeof(Config));
 
+    cfg->pan_step     = 120;
+    cfg->titlebar     = 0;
+    cfg->ui           = 1;
+    cfg->xr_colors    = 1;
+    cfg->border       = 1;
+    cfg->border_width = 1;
+    cfg->defaultsh    = dupstr("/bin/sh");
+    cfg->fonts        = dupstr("Terminus:style=Regular:pixelsize=16:antialias=false");
+    cfg->fontb        = dupstr("FiraMonoNerdFont:style=Regular:pixelsize=20:antialias=false");
+
+    lua_getglobal(L, "opts");
+    if (lua_istable(L, -1)) {
+        cfg->pan_step     = (uint32_t)opt_int(L, "pan_step",     120);
+        cfg->titlebar     = (uint8_t)opt_int(L,  "titlebar",     0);
+        cfg->ui           = (uint8_t)opt_int(L,  "ui",           1);
+        cfg->xr_colors    = (uint8_t)opt_int(L,  "xr_colors",    1);
+        cfg->border       = (uint8_t)opt_int(L,  "border",       1);
+        cfg->border_width = (uint16_t)opt_int(L, "border_width", 1);
+    }
+    lua_pop(L, 1);
+
     lua_getglobal(L, "defaultsh");
-    cfg->defaultsh = dupstr(lua_tostring(L, -1));
-    if (!cfg->defaultsh) cfg->defaultsh = dupstr("/bin/sh");
+    if (lua_isstring(L, -1)) { free(cfg->defaultsh); cfg->defaultsh = dupstr(lua_tostring(L, -1)); }
+    lua_pop(L, 1);
+
+    lua_getglobal(L, "fonts");
+    if (lua_isstring(L, -1)) { free(cfg->fonts); cfg->fonts = dupstr(lua_tostring(L, -1)); }
+    lua_pop(L, 1);
+
+    lua_getglobal(L, "fontb");
+    if (lua_isstring(L, -1)) { free(cfg->fontb); cfg->fontb = dupstr(lua_tostring(L, -1)); }
     lua_pop(L, 1);
 
     lua_getglobal(L, "keys");
@@ -146,6 +182,8 @@ Config *config_load(const char *path) {
 void config_free(Config *cfg) {
     if (!cfg) return;
     free(cfg->defaultsh);
+    free(cfg->fonts);
+    free(cfg->fontb);
     for (int i = 0; i < cfg->nkeys; i++) {
         if (cfg->keys[i].arg.com) {
             for (int j = 0; cfg->keys[i].arg.com[j]; j++)

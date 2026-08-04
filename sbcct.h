@@ -9,15 +9,6 @@
 
 #include "sbcwm.h"
 
-typedef struct Bind Bind;
-
-struct Bind {
-    KeySym key;
-    const char *label;
-    const char *cmd;
-    int input;
-}; 
-
 struct key {
     unsigned int  mod;
     xcb_keysym_t  keysym;
@@ -27,6 +18,18 @@ struct key {
 
 typedef struct {
     char *defaultsh;
+    char *fonts;
+    char *fontb;
+
+    uint32_t pan_step;
+    uint8_t titlebar;
+    uint8_t ui;
+
+    uint8_t xr_colors;
+
+    uint8_t border;
+    uint16_t border_width;
+
     struct key *keys;
     int   nkeys;
 } Config;

@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 199309L
+#include <stdint.h>
 #include <xcb/xcb.h>
 #include <xcb/randr.h>
 #include <xcb/shape.h>
@@ -25,24 +26,7 @@
 #include "sbcct.h"
 #include "sbcwm.h"
 
-#define PAN_STEP      120
-
-#define TITLEBAR    0
-
-#define BORDER	    1
-#define BORDER_W    1
-
-#define UI_HUD 1
-
-#define XR_COLORS  1
-
-#define WBORDER (BORDER ? BORDER_W : 0)
-#define TB_CONTENT_H (TITLEBAR_HEIGHT - 2 * WBORDER)
-
 #define MOD Mod4Mask
-
-static const char *fonts[] = { "Terminus:style=Regular:pixelsize=16:antialias=false" };
-static const char *fontb[] = { "FiraMonoNerdFont:style=Regular:pixelsize=20:antialias=false" };
 
 const FcChar8 *close_sym = (FcChar8 *)"";
 const FcChar8 *max_sym = (FcChar8 *)"󰝣";
@@ -91,6 +75,10 @@ static xcb_gcontext_t minimap_gc = 0;
 static volatile sig_atomic_t reload_colors = 0;
 static ColorScheme cols;
 
+static xcb_window_t notify_win = XCB_NONE;
+static long notify_until = 0;
+static XftFont *notify_font = NULL;
+
 static int randr_event_base = 0;
 
 static MonitorInfo mons[MAX_MONITORS];
@@ -101,7 +89,8 @@ static xcb_atom_t sbcwm_atom_monitor;
 static xcb_atom_t net_supported, net_wm_window_type, net_wm_window_type_dock,
                   net_wm_strut, net_wm_strut_partial, net_current_desktop,
                   net_supporting_wm_check, net_wm_name, net_wm_visible_name,
-                  net_active_window, ewmh_utf8_string, wm_delete_window,
+                  net_active_window, net_wm_state, net_wm_state_fullscreen,
+                  ewmh_utf8_string, wm_delete_window,
                   wm_protocols, wm_normal_hints_atom, net_client_list_stacking;
 
 static int strut[4] = {0, 0, 0, 0};
@@ -117,6 +106,10 @@ static int16_t      drag_root_x    = 0;
 static int16_t      drag_root_y    = 0;
 
 Config *cfg;
+
+static uint32_t wborder(void) { return cfg->border ? cfg->border_width : 0; }
+
+#define TB_CONTENT_H (TITLEBAR_HEIGHT - 2 * wborder())
 
 static long now_ms(void) {
     struct timespec t_s;
@@ -258,11 +251,32 @@ void xcolor_to_xftcolor(unsigned long pixel, XftColor *xft) {
     XftColorAllocValue(dpy, visual, cmap, &rc, xft);
 }
 
+static XftFont *open_font(const char *name) {
+    if (!name || !*name) name = "fixed";
+    XftFont *f = XftFontOpenName(dpy, scrno, name);
+    if (!f) {
+        fprintf(stderr, "sbcwm: cannot open font '%s', falling back to 'fixed'\n", name);
+        f = XftFontOpenName(dpy, scrno, "fixed");
+    }
+    return f;
+}
+
+static void fonts_reload(void) {
+    if (mm_font)     XftFontClose(dpy, mm_font);
+    mm_font = open_font(cfg->fonts);
+    if (title_font)  XftFontClose(dpy, title_font);
+    title_font = open_font(cfg->fontb);
+    if (button_font) XftFontClose(dpy, button_font);
+    button_font = open_font(cfg->fontb);
+    if (notify_font) XftFontClose(dpy, notify_font);
+    notify_font = open_font(cfg->fonts);
+}
+
 static void minimap_init(void) {
     if (mm_inited) return;
     XRenderColor xr = { .red = 0, .green = 0, .blue = 0, .alpha = 0xFFFF };
     XftColorAllocValue(dpy, visual, cmap, &xr, &mm_color);
-    mm_font = XftFontOpenName(dpy, scrno, *fonts);
+    mm_font = open_font(cfg->fonts);
     mm_inited = 1;
 }
 
@@ -396,12 +410,14 @@ static void minimap_draw_one(xcb_window_t panel, int mon, int mon_w, int mon_h, 
         char *title = client_get_title(c->w);
         if (!title) title = copystr("");
 
-        XGlyphInfo ext;
-        XftTextExtentsUtf8(dpy, mm_font, (FcChar8 *)title, (int)strlen(title), &ext);
-        int bx = rx + rw / 2, by = ry + ext.height + 5;
-        int x = bx - ext.xOff / 2;
+        if (mm_font) {
+            XGlyphInfo ext;
+            XftTextExtentsUtf8(dpy, mm_font, (FcChar8 *)title, (int)strlen(title), &ext);
+            int bx = rx + rw / 2, by = ry + ext.height + 5;
+            int x = bx - ext.xOff / 2;
 
-        XftDrawStringUtf8(mm_draw, &mm_color, mm_font, x, by, (FcChar8 *)title, (int)strlen(title));
+            XftDrawStringUtf8(mm_draw, &mm_color, mm_font, x, by, (FcChar8 *)title, (int)strlen(title));
+        }
         free(title);
     }
 
@@ -436,6 +452,7 @@ void toggle_minimap(const Arg arg) {
 
 static void always_ot(void) {
     if (!minimap) return;
+
     for (int i = 0; i < MAX_MONITORS; i++)
         if (minimap_win[i]) {
             uint32_t stack = XCB_STACK_MODE_ABOVE;
@@ -456,7 +473,7 @@ xcb_window_t titlebar_create(client *c) {
         XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION,
     };
     xcb_create_window(conn, XCB_COPY_FROM_PARENT, titlebar, root,
-                       (int16_t)x, (int16_t)(y - TITLEBAR_HEIGHT), (uint16_t)w, TITLEBAR_HEIGHT, (uint16_t)WBORDER,
+                       (int16_t)x, (int16_t)(y - TITLEBAR_HEIGHT), (uint16_t)w, TITLEBAR_HEIGHT, (uint16_t)wborder(),
                        XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, mask, values);
     xcb_map_window(conn, titlebar);
     return titlebar;
@@ -484,15 +501,15 @@ void titlebar_draw(client *c) {
 
     unsigned long bg;
 
-    if (XR_COLORS) { bg = (c == cur) ? cols.cs[2] : 0x000000; } else { bg = (c == cur) ? cols.cs[2] : 0x000000; }
+    if (cfg->xr_colors) { bg = (c == cur) ? cols.cs[2] : 0x000000; } else { bg = (c == cur) ? cols.cs[2] : 0x000000; }
 
     uint32_t fgc = (uint32_t)bg;
     xcb_change_gc(conn, tgc, XCB_GC_FOREGROUND, &fgc);
     xcb_rectangle_t full = { 0, 0, (uint16_t)tw, (uint16_t)th };
     xcb_poly_fill_rectangle(conn, tpix, tgc, 1, &full);
 
-    if (!button_font) button_font = XftFontOpenName(dpy, scrno, *fontb);
-    if (!title_font)  title_font  = XftFontOpenName(dpy, scrno, *fontb);
+    if (!button_font) button_font = open_font(cfg->fontb);
+    if (!title_font)  title_font  = open_font(cfg->fontb);
 
     if (button_font) {
         XftDraw  *btn_draw = XftDrawCreate(dpy, tpix, visual, cmap);
@@ -630,9 +647,9 @@ void client_move(client *c, int x, int y) {
 
     if (c->mon < n_mons) {
         int mx = mons[c->mon].x, my = mons[c->mon].y, mw = mons[c->mon].w, mh = mons[c->mon].h;
-        apply_mask(c->w, x, y, (unsigned)c->width, (unsigned)c->height, WBORDER, mx, my, mw, mh);
+        apply_mask(c->w, x, y, (unsigned)c->width, (unsigned)c->height, wborder(), mx, my, mw, mh);
         if (c->titlebar)
-            apply_mask(c->titlebar, x, y - TITLEBAR_HEIGHT, (unsigned)c->width, TB_CONTENT_H, WBORDER, mx, my, mw, mh);
+            apply_mask(c->titlebar, x, y - TITLEBAR_HEIGHT, (unsigned)c->width, TB_CONTENT_H, wborder(), mx, my, mw, mh);
     }
 
     xcb_flush(conn);
@@ -690,7 +707,7 @@ void configure(client *c) {
     ce.y = (int16_t)c->y;
     ce.width = (uint16_t)c->width;
     ce.height = (uint16_t)c->height;
-    ce.border_width = WBORDER;
+    ce.border_width = wborder();
     ce.above_sibling = XCB_NONE;
     ce.override_redirect = 0;
     xcb_send_event(conn, 0, c->w, XCB_EVENT_MASK_STRUCTURE_NOTIFY, (const char *)&ce);
@@ -712,9 +729,9 @@ void resizeclient(client *c, int w, int h) {
     }
     if (c->mon < n_mons) {
         int mx = mons[c->mon].x, my = mons[c->mon].y, mw = mons[c->mon].w, mh = mons[c->mon].h;
-        apply_mask(c->w, c->x, c->y, (unsigned)c->width, (unsigned)c->height, WBORDER, mx, my, mw, mh);
+        apply_mask(c->w, c->x, c->y, (unsigned)c->width, (unsigned)c->height, wborder(), mx, my, mw, mh);
         if (c->titlebar)
-            apply_mask(c->titlebar, c->x, c->y - TITLEBAR_HEIGHT, (unsigned)c->width, TB_CONTENT_H, WBORDER, mx, my, mw, mh);
+            apply_mask(c->titlebar, c->x, c->y - TITLEBAR_HEIGHT, (unsigned)c->width, TB_CONTENT_H, wborder(), mx, my, mw, mh);
     }
     xcb_flush(conn);
 }
@@ -853,9 +870,9 @@ void canvas_apply_all(void) {
                 }
                 continue;
             }
-            apply_mask(c->w, sx, sy, (unsigned)c->width, (unsigned)c->height, WBORDER, mx, my, mw, mh);
+            apply_mask(c->w, sx, sy, (unsigned)c->width, (unsigned)c->height, wborder(), mx, my, mw, mh);
             if (c->titlebar)
-                apply_mask(c->titlebar, sx, sy - TITLEBAR_HEIGHT, (unsigned)c->width, (unsigned)TB_CONTENT_H, WBORDER, mx, my, mw, mh);
+                apply_mask(c->titlebar, sx, sy - TITLEBAR_HEIGHT, (unsigned)c->width, (unsigned)TB_CONTENT_H, wborder(), mx, my, mw, mh);
         }
 
         client_move(c, sx, sy);
@@ -876,7 +893,7 @@ void canvas_pan(int mon, float dx, float dy) {
 
 void canvas_pan_key(const Arg arg) {
     int   mon  = mon_at_ptr();
-    float step = (float)PAN_STEP;
+    float step = (float)cfg->pan_step;
     switch (arg.i) {
         case 0: canvas_pan(mon, -step,  0);    break;
         case 1: canvas_pan(mon,  step,  0);    break;
@@ -1011,7 +1028,33 @@ void client_message(xcb_generic_event_t *gen_e) {
         if (target) canvas_focus(target);
         return;
     }
-    // TO_DO; _NET_WM_STATE fullscreen requests here 
+
+    if (e->type == net_wm_state) {
+        client *target = NULL;
+        for win
+            if (c->w == e->window) { target = c; break; }
+        if (!target) return;
+
+        for (int i = 1; i <= 2; i++) {
+            xcb_atom_t prop = e->data.data32[i];
+            if (prop == XCB_ATOM_NONE) continue;
+
+            int action = e->data.data32[0];
+            int want_fs;
+
+            if (action == 0) want_fs = 0;
+            else if (action == 1) want_fs = 1;
+            else want_fs = !target->f;
+
+            if (prop == net_wm_state_fullscreen && want_fs != target->f) {
+                client *old_cur = cur;
+                cur = target;
+                win_fs((Arg){0});
+                cur = old_cur ? old_cur : target;
+            }
+        }
+        return;
+    }
 }
 
 void configure_notify(xcb_configure_notify_event_t *e) {
@@ -1219,7 +1262,7 @@ void win_add(xcb_window_t w) {
     c->height = (int)dh2;
     updatesizehints(c);
 
-    if (TITLEBAR) {
+    if (cfg->titlebar) {
         c->titlebar = titlebar_create(c);
         titlebar_update(c);
     }
@@ -1298,7 +1341,7 @@ void win_center(const Arg arg) {
     }
 
     int total_w = (int)ww_;
-    int total_h = (int)wh_ + WBORDER;
+    int total_h = (int)wh_ + wborder();
 
     int sx = mx + (mw - total_w) / 2;
     int sy = my + (mh - total_h) / 2;
@@ -1317,6 +1360,9 @@ void win_fs(const Arg arg) {
     if (!cur) return;
     if (!cur->f) win_size(cur->w, &cur->wx, &cur->wy, &cur->ww, &cur->wh);
 
+    char buf[256];
+    char *win_title = client_get_title(cur->w);
+
     xcb_query_pointer_reply_t *ptr = xcb_query_pointer_reply(conn, xcb_query_pointer(conn, root), NULL);
     int mx = 0, my = 0, mw = sw, mh = sh;
     if (ptr) {
@@ -1328,26 +1374,25 @@ void win_fs(const Arg arg) {
     cur->f = !cur->f;
 
     if (cur->f) {
-        if (TITLEBAR) {
+        if (cfg->titlebar) {
             resizeclient(cur, mw, mh - TITLEBAR_HEIGHT);
             client_move(cur, mx, my + TITLEBAR_HEIGHT);
-            win_center((Arg){0});
         } else {
             resizeclient(cur, mw, mh);
             client_move(cur, mx, my);
-            win_center((Arg){0});
-        }
 
+        }
         minimap_update();
-        titlebar_update(cur);
-        if (!TITLEBAR && cur->titlebar) xcb_unmap_window(conn, cur->titlebar);
+	snprintf(buf, sizeof(buf), "%s: Fulscreen", win_title ? win_title : "");
+        if (cur->titlebar) titlebar_update(cur);
+        if (!cfg->titlebar && cur->titlebar) xcb_unmap_window(conn, cur->titlebar);
         uint32_t stack = XCB_STACK_MODE_ABOVE;
         xcb_configure_window(conn, cur->w, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
     } else {
         resizeclient(cur, (int)cur->ww, (int)cur->wh);
         client_move(cur, cur->wx, cur->wy);
         minimap_update();
-        titlebar_update(cur);
+	snprintf(buf, sizeof(buf), "%s: Floating", win_title ? win_title : "");
         if (cur->titlebar) {
             xcb_map_window(conn, cur->titlebar);
             uint32_t stack = XCB_STACK_MODE_ABOVE;
@@ -1357,6 +1402,14 @@ void win_fs(const Arg arg) {
         uint32_t stack = XCB_STACK_MODE_ABOVE;
         xcb_configure_window(conn, cur->w, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
     }
+
+    notify_show(buf, 0x202020);
+
+    xcb_atom_t fs_atom = cur->f ? net_wm_state_fullscreen : XCB_ATOM_NONE;
+    xcb_change_property(conn, XCB_PROP_MODE_REPLACE, cur->w, net_wm_state,
+                        XCB_ATOM_ATOM, 32, 1, &fs_atom);
+
+    free(win_title);
     xcb_flush(conn);
 }
 
@@ -1409,7 +1462,6 @@ void configure_request(xcb_configure_request_event_t *e) {
             sx = canvas_to_screen(c->cx, canvas.pan_x[m]);
             sy = canvas_to_screen(c->cy, canvas.pan_y[m]);
             mask |= XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y;
-            titlebar_update(c);
             break;
         }
     }
@@ -1418,14 +1470,16 @@ void configure_request(xcb_configure_request_event_t *e) {
     int i = 0;
     if (mask & XCB_CONFIG_WINDOW_X)            values[i++] = (uint32_t)sx;
     if (mask & XCB_CONFIG_WINDOW_Y)            values[i++] = (uint32_t)sy;
-    if (mask & XCB_CONFIG_WINDOW_WIDTH)	     { values[i++] = e->width;  if (target) target->width = e->width; }
-    if (mask & XCB_CONFIG_WINDOW_HEIGHT)     { values[i++] = e->height;  if (target) target->height = e->height; }
+    if (mask & XCB_CONFIG_WINDOW_WIDTH)      { values[i++] = e->width;  if (target) target->width = e->width; }
+    if (mask & XCB_CONFIG_WINDOW_HEIGHT)     { values[i++] = e->height; if (target) target->height = e->height; }
     if (mask & XCB_CONFIG_WINDOW_SIBLING)      values[i++] = e->sibling;
     if (mask & XCB_CONFIG_WINDOW_STACK_MODE)   values[i++] = e->stack_mode;
     xcb_configure_window(conn, e->window, mask, values);
 
     if (target && target->titlebar) {
-        uint32_t tv[4] = { (uint32_t)sx, (uint32_t)(sy - TITLEBAR_HEIGHT), e->width, TITLEBAR_HEIGHT };
+        unsigned int tw = 0, th = 0;
+        win_size(target->w, NULL, NULL, &tw, &th);
+        uint32_t tv[4] = { (uint32_t)sx, (uint32_t)(sy - TITLEBAR_HEIGHT), tw, TITLEBAR_HEIGHT };
         xcb_configure_window(conn, target->titlebar,
             XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y | XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, tv);
         titlebar_update(target);
@@ -1532,7 +1586,7 @@ void map_request(xcb_map_request_event_t *e) {
                        XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_FOCUS_CHANGE;
     xcb_change_window_attributes(conn, w, XCB_CW_EVENT_MASK, &evmask);
  
-    uint32_t bw = WBORDER;
+    uint32_t bw = wborder();
     xcb_configure_window(conn, w, XCB_CONFIG_WINDOW_BORDER_WIDTH, &bw);
  
     int nx = 0, ny = 0; unsigned int nw = 0, nh = 0;
@@ -1583,6 +1637,80 @@ void run(const Arg arg) {
 
 void quit(const Arg arg) {
 	running = 0;
+}
+
+void notify_show(const char *msg, uint32_t bg) {
+    if (notify_win != XCB_NONE) {
+        xcb_destroy_window(conn, notify_win);
+        notify_win = XCB_NONE;
+    }
+
+    int w = 260, h = 42;
+    int x = sw - w - 10;
+    int y = 10;
+
+    notify_win = xcb_generate_id(conn);
+    uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT;
+    uint32_t values[] = { bg, 1 };
+    xcb_create_window(conn, XCB_COPY_FROM_PARENT, notify_win, root,
+                      (int16_t)x, (int16_t)y, (uint16_t)w, (uint16_t)h, 0,
+                      XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, mask, values);
+
+    xcb_flush(conn);
+    xcb_map_window(conn, notify_win);
+    XftDraw *draw = XftDrawCreate(dpy, notify_win, visual, cmap);
+
+    if (!notify_font)
+        notify_font = open_font(cfg->fonts);
+
+    if (notify_font) {
+        XRenderColor xr = { .red = 65535, .green = 65535, .blue = 65535, .alpha = 65535 };
+        XftColor color;
+        if (XftColorAllocValue(dpy, visual, cmap, &xr, &color)) {
+            XGlyphInfo ext;
+            XftTextExtentsUtf8(dpy, notify_font, (const FcChar8 *)msg, (int)strlen(msg), &ext);
+            int nx = MAX(0, (w - ext.xOff) / 2);
+            int ny = h / 2 + (notify_font->ascent - notify_font->descent) / 2;
+            XftDrawStringUtf8(draw, &color, notify_font, nx, ny, (const FcChar8 *)msg, (int)strlen(msg));
+            XftColorFree(dpy, visual, cmap, &color);
+        }
+        XftDrawDestroy(draw);
+    }
+
+    uint32_t stack = XCB_STACK_MODE_ABOVE;
+    xcb_configure_window(conn, notify_win, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+
+    notify_until = now_ms() + 2000;
+    xcb_flush(conn);
+}
+
+static void notify_cleanup(void) {
+    if (notify_win != XCB_NONE && now_ms() >= notify_until) {
+        xcb_destroy_window(conn, notify_win);
+        notify_win = XCB_NONE;
+        xcb_flush(conn);
+    }
+}
+
+void reload_config(const Arg arg) {
+    (void)arg;
+    char cfgdir[256];
+    snprintf(cfgdir, sizeof(cfgdir), "%s/.config/sbcwm/config.lua", get_home());
+
+    Config *new_cfg = config_load(cfgdir);
+    if (!new_cfg) {
+        fprintf(stderr, "sbcwm: failed to reload config\n");
+        notify_show("Config failed", 0x202020);
+        return;
+    }
+
+    Config *old_cfg = cfg;
+    cfg = new_cfg;
+    input_grab(root);
+    fonts_reload();
+    config_free(old_cfg);
+    xcb_flush(conn);
+    notify_show("Config reloaded", 0x202020);
 }
 
 void input_grab(xcb_window_t rootw) {
@@ -1715,6 +1843,8 @@ int main(void) {
     net_wm_strut             = get_atom("_NET_WM_STRUT");
     net_wm_strut_partial     = get_atom("_NET_WM_STRUT_PARTIAL");
     net_current_desktop      = get_atom("_NET_CURRENT_DESKTOP");
+    net_wm_state             = get_atom("_NET_WM_STATE");
+    net_wm_state_fullscreen  = get_atom("_NET_WM_STATE_FULLSCREEN");
     wm_delete_window         = get_atom("WM_DELETE_WINDOW");
     wm_protocols             = get_atom("WM_PROTOCOLS");
     wm_normal_hints_atom     = XCB_ATOM_WM_NORMAL_HINTS;
@@ -1750,7 +1880,7 @@ int main(void) {
     xcb_atom_t supported[] = {
         net_supporting_wm_check, net_wm_name, net_wm_window_type,
         net_wm_window_type_dock, net_wm_strut, net_wm_strut_partial,
-        net_current_desktop, net_client_list_stacking,
+        net_current_desktop, net_client_list_stacking, net_wm_state,
     };
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, root, net_supported,
                          XCB_ATOM_ATOM, 32, sizeof(supported) / sizeof(*supported), supported);
@@ -1785,7 +1915,7 @@ int main(void) {
 
     input_grab(root);
 
-    if (UI_HUD) {
+    if (cfg->ui) {
         minimap_create();
         minimap_update();
         if (!minimap) {
@@ -1862,9 +1992,10 @@ handle_non_motion:
 
         free(ev);
 
-        if (UI_HUD) {
+        if (cfg->ui) {
             always_ot();
         }
+        notify_cleanup();
     }
 
     return 0;

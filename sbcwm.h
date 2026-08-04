@@ -151,9 +151,11 @@ void win_size(xcb_window_t w, int *x, int *y, unsigned int *wd, unsigned int *ht
 void handle_sigusr1(int sig);
 void handle_sigusr2(int sig);
 
-void reload_config(void);
+void reload_config(const Arg arg);
 
 void update_client_list_stacking(void);
+
+void notify_show(const char *msg, uint32_t bg);
 
 void monitors_refresh(void);
 int mon_at_ptr(void);
