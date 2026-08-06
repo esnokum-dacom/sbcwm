@@ -105,6 +105,10 @@ static uint16_t     drag_button    = 0;
 static int16_t      drag_root_x    = 0;
 static int16_t      drag_root_y    = 0;
 
+#define MAX_DOCKS 32
+static xcb_window_t docks[MAX_DOCKS];
+static int          n_docks = 0;
+
 Config *cfg;
 
 static uint32_t wborder(void) { return cfg->border ? cfg->border_width : 0; }
@@ -450,14 +454,39 @@ void toggle_minimap(const Arg arg) {
     xcb_flush(conn);
 }
 
-static void always_ot(void) {
-    if (!minimap) return;
+static int dock_known(xcb_window_t w) {
+    for (int i = 0; i < n_docks; i++)
+        if (docks[i] == w) return 1;
+    return 0;
+}
 
-    for (int i = 0; i < MAX_MONITORS; i++)
-        if (minimap_win[i]) {
-            uint32_t stack = XCB_STACK_MODE_ABOVE;
-            xcb_configure_window(conn, minimap_win[i], XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+static void dock_add(xcb_window_t w) {
+    if (dock_known(w) || n_docks >= MAX_DOCKS) return;
+    docks[n_docks++] = w;
+}
+
+static void dock_del(xcb_window_t w) {
+    for (int i = 0; i < n_docks; i++) {
+        if (docks[i] == w) {
+            docks[i] = docks[--n_docks];
+            return;
         }
+    }
+}
+
+static void dock_track(xcb_window_t w) {
+    xcb_get_window_attributes_reply_t *wa =
+        xcb_get_window_attributes_reply(conn, xcb_get_window_attributes(conn, w), NULL);
+    if (wa && wa->override_redirect)
+        dock_add(w);
+    free(wa);
+}
+
+static void docks_raise(void) {
+    for (int i = 0; i < n_docks; i++) {
+        uint32_t stack = XCB_STACK_MODE_ABOVE;
+        xcb_configure_window(conn, docks[i], XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+    }
 }
 
 xcb_window_t titlebar_create(client *c) {
@@ -630,11 +659,17 @@ void client_move(client *c, int x, int y) {
     uint32_t values[2] = { (uint32_t)x, (uint32_t)y };
     xcb_configure_window(conn, c->w, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, values);
 
-    uint32_t vstm[2] = { cur->w, XCB_STACK_MODE_ABOVE };
-    xcb_configure_window(conn, cur->w, XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE, vstm);
-
-    uint32_t vst[2] = { c->w, XCB_STACK_MODE_BELOW };
-    xcb_configure_window(conn, c->w, XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE, vst);
+    if (cur && c != cur) {
+        uint32_t vst[2] = { c->w, XCB_STACK_MODE_ABOVE };
+        xcb_configure_window(conn, cur->w, XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE, vst);
+        if (cur->titlebar) {
+            uint32_t tst[2] = { c->w, XCB_STACK_MODE_ABOVE };
+            xcb_configure_window(conn, cur->titlebar, XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE, tst);
+        }
+    } else {
+        uint32_t stack = XCB_STACK_MODE_ABOVE;
+        xcb_configure_window(conn, c->w, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+    }
 
     if (c->titlebar) {
         uint32_t tv[2] = { (uint32_t)x, (uint32_t)(y - TITLEBAR_HEIGHT) };
@@ -652,6 +687,7 @@ void client_move(client *c, int x, int y) {
             apply_mask(c->titlebar, x, y - TITLEBAR_HEIGHT, (unsigned)c->width, TB_CONTENT_H, wborder(), mx, my, mw, mh);
     }
 
+    docks_raise();
     xcb_flush(conn);
 }
 
@@ -961,6 +997,7 @@ void canvas_focus(client *c) {
     xcb_configure_window(conn, c->w, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
     if (c->titlebar) xcb_configure_window(conn, c->titlebar, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
 
+    docks_raise();
     win_focus(c);
     titlebar_update(cur);
 }
@@ -1005,6 +1042,13 @@ void win_next(const Arg arg) {
 
 void notify_destroy(xcb_destroy_notify_event_t *gen_e) {
     xcb_destroy_notify_event_t *e = (xcb_destroy_notify_event_t *)gen_e;
+
+    dock_del(e->window);
+
+    int managed = 0;
+    for win
+        if (c->w == e->window) { managed = 1; break; }
+    if (!managed) return;
 
     win_del(e->window);
     minimap_update();
@@ -1065,7 +1109,10 @@ void configure_notify(xcb_configure_notify_event_t *e) {
         canvas_apply_all();
         return;
     }
- 
+
+    if (dock_known(e->window))
+        return;
+
     update_client_list_stacking();
 }
 
@@ -1078,6 +1125,8 @@ void focusin(xcb_focus_in_event_t *e) {
  
 void notify_unmap(xcb_unmap_notify_event_t *e) {
     xcb_window_t w = e->window;
+
+    dock_del(w);
 
     int managed = 0;
     for win
@@ -1150,6 +1199,7 @@ void notify_motion(xcb_motion_notify_event_t *e) {
             uint32_t stack = XCB_STACK_MODE_ABOVE;
             xcb_configure_window(conn, cur->titlebar, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
         }
+        docks_raise();
         minimap_update();
  
         int m = cur->mon;
@@ -1189,9 +1239,9 @@ void button_press(xcb_button_press_event_t *gen_e) {
         win_size(c->titlebar, NULL, NULL, &tw, &th);
  
         int btn_w  = 22;
-        int btn_x = (int)tw - 20;
-        int btn_f  = btn_x - btn_w - 4;
- 
+        int btn_x = (int)tw - 26;
+        int btn_f  = btn_x - btn_w - 2;
+
         if (e->detail == XCB_BUTTON_INDEX_1 && e->event_x >= btn_x) { win_kill((Arg){0}); return; }
         if (e->detail == XCB_BUTTON_INDEX_1 && e->event_x >= btn_f && e->event_x < btn_x) { win_fs((Arg){0}); return; }
  
@@ -1205,17 +1255,18 @@ void button_press(xcb_button_press_event_t *gen_e) {
         uint32_t stack = XCB_STACK_MODE_ABOVE;
         xcb_configure_window(conn, c->w, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
         xcb_configure_window(conn, c->titlebar, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+        docks_raise();
         xcb_flush(conn);
         return;
     }
- 
+  
     if (!e->child) return;
- 
+  
     client *target = NULL;
     for win {
         if (c->w == e->child || c->titlebar == e->child) { target = c; break; }
     }
- 
+  
     if (target) {
         win_focus(target);
         uint32_t stack = XCB_STACK_MODE_ABOVE;
@@ -1228,7 +1279,8 @@ void button_press(xcb_button_press_event_t *gen_e) {
         xcb_configure_window(conn, e->child, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
         if (cur && cur->titlebar) xcb_configure_window(conn, cur->titlebar, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
     }
- 
+    docks_raise();
+  
     drag_subwindow = e->child;
     drag_button = e->detail;
     drag_root_x = e->root_x;
@@ -1403,6 +1455,7 @@ void win_fs(const Arg arg) {
         xcb_configure_window(conn, cur->w, XCB_CONFIG_WINDOW_STACK_MODE, &stack);
     }
 
+    docks_raise();
     notify_show(buf, 0x202020);
 
     xcb_atom_t fs_atom = cur->f ? net_wm_state_fullscreen : XCB_ATOM_NONE;
@@ -1484,6 +1537,7 @@ void configure_request(xcb_configure_request_event_t *e) {
             XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y | XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, tv);
         titlebar_update(target);
     }
+    docks_raise();
     xcb_flush(conn);
 }
 
@@ -1542,13 +1596,14 @@ void map_request(xcb_map_request_event_t *e) {
  
     if (win_is_dock(w)) {
         update_struts(w);
+        dock_add(w);
         xcb_map_window(conn, w);
         xcb_flush(conn);
         return;
     }
  
     for win
-        if (c->w == w) { xcb_map_window(conn, w); xcb_flush(conn); return; }
+        if (c->w == w) { xcb_map_window(conn, w); docks_raise(); xcb_flush(conn); return; }
  
  
     xcb_window_t transient_for = XCB_NONE;
@@ -1575,6 +1630,7 @@ void map_request(xcb_map_request_event_t *e) {
             if (t == skip_types[i]) {
                 free(r);
                 xcb_map_window(conn, w);
+                docks_raise();
                 xcb_flush(conn);
                 return;
             }
@@ -1617,6 +1673,7 @@ void map_request(xcb_map_request_event_t *e) {
     minimap_update();
     cur = oc;
     win_focus(list->prev);
+    docks_raise();
     xcb_flush(conn);
 }
  
@@ -1867,6 +1924,15 @@ int main(void) {
     monitors_refresh();
     canvas_sync_to_root();
 
+    xcb_query_tree_cookie_t dck = xcb_query_tree(conn, root);
+    xcb_query_tree_reply_t *dtr = xcb_query_tree_reply(conn, dck, NULL);
+    if (dtr) {
+        xcb_window_t *ch = xcb_query_tree_children(dtr);
+        for (int i = 0; i < xcb_query_tree_children_length(dtr); i++)
+            dock_track(ch[i]);
+        free(dtr);
+    }
+
     xcb_window_t wmcheck = xcb_generate_id(conn);
     xcb_create_window(conn, XCB_COPY_FROM_PARENT, wmcheck, root, 0, 0, 1, 1, 0,
                        XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, NULL);
@@ -1889,7 +1955,8 @@ int main(void) {
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, root, net_current_desktop,
                          XCB_ATOM_CARDINAL, 32, 1, &cur_ws);
 
-    uint32_t root_mask = XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT;
+    uint32_t root_mask = XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT |
+                         XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY;
     xcb_change_window_attributes(conn, root, XCB_CW_EVENT_MASK, &root_mask);
 
     xcb_font_t cursor_font = xcb_generate_id(conn);
@@ -1910,7 +1977,6 @@ int main(void) {
     if (!cfg) {
 	fprintf(stderr, "sbcwm: failed to load config, exiting\n");
 	exit(1);
-	return 1;
     }
 
     input_grab(root);
@@ -1941,6 +2007,7 @@ int main(void) {
             case XCB_KEY_PRESS:         key_press((xcb_key_press_event_t *)ev); break;
             case XCB_EXPOSE:            expose_event((xcb_expose_event_t *)ev); break;
             case XCB_MAP_REQUEST:       map_request((xcb_map_request_event_t *)ev); break;
+            case XCB_MAP_NOTIFY:        dock_track(((xcb_map_notify_event_t *)ev)->window); break;
             case XCB_MAPPING_NOTIFY:    mapping_notify((xcb_mapping_notify_event_t *)ev); break;
             case XCB_DESTROY_NOTIFY:    notify_destroy((xcb_destroy_notify_event_t *)ev); break;
             case XCB_UNMAP_NOTIFY:      notify_unmap((xcb_unmap_notify_event_t *)ev); break;
@@ -1973,6 +2040,7 @@ handle_non_motion:
                     case XCB_KEY_PRESS:         key_press((xcb_key_press_event_t *)ev); break;
                     case XCB_EXPOSE:            expose_event((xcb_expose_event_t *)ev); break;
                     case XCB_MAP_REQUEST:       map_request((xcb_map_request_event_t *)ev); break;
+                    case XCB_MAP_NOTIFY:        dock_track(((xcb_map_notify_event_t *)ev)->window); break;
                     case XCB_MAPPING_NOTIFY:    mapping_notify((xcb_mapping_notify_event_t *)ev); break;
                     case XCB_DESTROY_NOTIFY:    notify_destroy((xcb_destroy_notify_event_t *)ev); break;
                     case XCB_UNMAP_NOTIFY:      notify_unmap((xcb_unmap_notify_event_t *)ev); break;
@@ -1992,8 +2060,11 @@ handle_non_motion:
 
         free(ev);
 
-        if (cfg->ui) {
-            always_ot();
+        if (reload_colors) {
+            reload_colors = 0;
+            load_colors();
+            update_borders();
+            titlebar_update(cur);
         }
         notify_cleanup();
     }
