@@ -7,6 +7,8 @@
 
 #include "sbcct.h"
 
+struct Config;
+
 #define MAX_MONITORS 8
 #define TITLEBAR_HEIGHT 25
 #define SPAWN_SEARCH_STEP 30
@@ -79,6 +81,24 @@ typedef struct {
 
 const char *get_home(void);
 
+extern xcb_window_t root;
+extern Display *dpy;
+extern xcb_connection_t *conn;
+extern int scrno;
+extern xcb_screen_t *screen;
+extern Visual *visual;
+extern Colormap cmap;
+extern int depth;
+extern ColorScheme cols;
+extern MonitorInfo mons[MAX_MONITORS];
+extern int n_mons;
+extern canvas_state canvas;
+
+extern XftFont *open_font(const char *name);
+
+void ctx_close(void);
+void ctx_open(int x, int y);
+
 void button_press(xcb_button_press_event_t *gen_e);
 void button_release(xcb_button_release_event_t *e);
 void configure_request(xcb_configure_request_event_t *e);
@@ -134,6 +154,9 @@ int is_titlebar(xcb_window_t w);
 
 void update_borders(void);
 
+void update_border_widths(void);
+void fonts_reload(void);
+
 unsigned long hex_to_xcolor(const char *hex);
 void load_colors(void);
 void xcolor_to_xftcolor(unsigned long pixel, XftColor *xft);
@@ -148,7 +171,6 @@ int applysizehints(client *c, int *w, int *h);
 char *copystr(const char *s);
 void win_size(xcb_window_t w, int *x, int *y, unsigned int *wd, unsigned int *ht);
 
-void handle_sigusr1(int sig);
 void handle_sigusr2(int sig);
 
 void reload_config(const Arg arg);
@@ -161,3 +183,17 @@ void monitors_refresh(void);
 int mon_at_ptr(void);
 int mon_at_win(xcb_window_t w);
 int mon_from_point(int px, int py);
+
+void icons_load_state(struct Config *cfg);
+void icons_rebuild(void);
+void icons_save(void);
+void icons_reposition(void);
+void icons_cleanup(void);
+void icons_lower(void);
+int  icons_visible(void);
+int  icon_window_is_icon(xcb_window_t w);
+void toggle_icons(const Arg arg);
+int  icon_handle_press(xcb_button_press_event_t *e);
+int  icon_handle_motion(xcb_motion_notify_event_t *e);
+int  icon_handle_release(xcb_button_release_event_t *e);
+int  icons_redraw_win(xcb_window_t w);

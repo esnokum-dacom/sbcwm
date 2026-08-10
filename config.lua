@@ -10,6 +10,19 @@ opts = {
   xr_colors = 1,
   border = 1,
   border_width = 1,
+  ctxbg = "#151515",
+  ctxborder = "#2d4d66",
+}
+
+ctx = {
+  { label = "Terminal",  func = "run", arg = {"st"} },
+  { label = "Launcher",  func = "run", arg = {"lm"} },
+  { label = "Wallpaper", func = "run", arg = {"xwall"} },
+  { label = "Icons",     func = "toggle_icons" },
+}
+
+icons = {
+  { name = "Term", image = os.getenv("HOME") .. "/.config/sbcwm/icons/terminal.png", x = 80, y = 80, cmd = {"st"} },
 }
 
 keys = {
