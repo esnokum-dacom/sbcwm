@@ -221,50 +221,54 @@ static IconImg *img_load(const char *path) {
     return png_load(path);
 }
 
-static void bilinear_scale(uint32_t *dst, int dw, int dh,
-                           const uint32_t *src, int sw, int sh) {
+static uint32_t img_premul(uint32_t c) {
+    unsigned a = c >> 24 & 0xff;
+    unsigned r = ((c >> 16 & 0xff) * a + 127) / 255;
+    unsigned g = ((c >> 8  & 0xff) * a + 127) / 255;
+    unsigned b = ((c       & 0xff) * a + 127) / 255;
+    return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+static void img_scale(uint32_t *dst, int dw, int dh,
+                      const uint32_t *src, int sw, int sh) {
     for (int y = 0; y < dh; y++) {
-        double sy = ((double)y + 0.5) * sh / dh - 0.5;
-        if (sy < 0) sy = 0;
-        int y0 = (int)sy;
-        if (y0 > sh - 1) y0 = sh - 1;
-        int y1 = y0 + 1 < sh ? y0 + 1 : sh - 1;
-        double fy = sy - y0;
+        double fy0 = (double)y * sh / dh;
+        double fy1 = (double)(y + 1) * sh / dh;
+        int sy0 = y * sh / dh;
+        int sy1 = ((y + 1) * sh + dh - 1) / dh;
+        if (sy1 > sh) sy1 = sh;
         for (int x = 0; x < dw; x++) {
-            double sx = ((double)x + 0.5) * sw / dw - 0.5;
-            if (sx < 0) sx = 0;
-            int x0 = (int)sx;
-            if (x0 > sw - 1) x0 = sw - 1;
-            int x1 = x0 + 1 < sw ? x0 + 1 : sw - 1;
-            double fx = sx - x0;
+            double fx0 = (double)x * sw / dw;
+            double fx1 = (double)(x + 1) * sw / dw;
+            int sx0 = x * sw / dw;
+            int sx1 = ((x + 1) * sw + dw - 1) / dw;
+            if (sx1 > sw) sx1 = sw;
 
-            uint32_t p00 = src[y0 * sw + x0], p01 = src[y0 * sw + x1];
-            uint32_t p10 = src[y1 * sw + x0], p11 = src[y1 * sw + x1];
+            double fa = 0, fr = 0, fg = 0, fb = 0, wsum = 0;
+            for (int sy = sy0; sy < sy1; sy++) {
+                double wy = MIN((double)(sy + 1), fy1) - MAX((double)sy, fy0);
+                if (wy <= 0) continue;
+                for (int sx = sx0; sx < sx1; sx++) {
+                    double wx = MIN((double)(sx + 1), fx1) - MAX((double)sx, fx0);
+                    if (wx <= 0) continue;
+                    double w = wx * wy;
+                    uint32_t c = img_premul(src[sy * sw + sx]);
+                    fa += w * (c >> 24 & 0xff);
+                    fr += w * (c >> 16 & 0xff);
+                    fg += w * (c >> 8 & 0xff);
+                    fb += w * (c & 0xff);
+                    wsum += w;
+                }
+            }
 
-            unsigned a = (unsigned)(
-                ((p00 >> 24 & 0xff) * (1 - fx) * (1 - fy) +
-                 (p01 >> 24 & 0xff) * fx       * (1 - fy) +
-                 (p10 >> 24 & 0xff) * (1 - fx) * fy +
-                 (p11 >> 24 & 0xff) * fx       * fy) + 0.5);
-            unsigned r = (unsigned)(
-                ((p00 >> 16 & 0xff) * (1 - fx) * (1 - fy) +
-                 (p01 >> 16 & 0xff) * fx       * (1 - fy) +
-                 (p10 >> 16 & 0xff) * (1 - fx) * fy +
-                 (p11 >> 16 & 0xff) * fx       * fy) + 0.5);
-            unsigned g = (unsigned)(
-                ((p00 >> 8 & 0xff) * (1 - fx) * (1 - fy) +
-                 (p01 >> 8 & 0xff) * fx       * (1 - fy) +
-                 (p10 >> 8 & 0xff) * (1 - fx) * fy +
-                 (p11 >> 8 & 0xff) * fx       * fy) + 0.5);
-            unsigned b = (unsigned)(
-                ((p00 & 0xff) * (1 - fx) * (1 - fy) +
-                 (p01 & 0xff) * fx       * (1 - fy) +
-                 (p10 & 0xff) * (1 - fx) * fy +
-                 (p11 & 0xff) * fx       * fy) + 0.5);
-            if (a > 255) a = 255;
-            if (r > 255) r = 255;
-            if (g > 255) g = 255;
-            if (b > 255) b = 255;
+            if (wsum <= 0) {
+                dst[y * dw + x] = 0;
+                continue;
+            }
+            unsigned a = (unsigned)(fa / wsum + 0.5);
+            unsigned r = (unsigned)(fr / wsum + 0.5);
+            unsigned g = (unsigned)(fg / wsum + 0.5);
+            unsigned b = (unsigned)(fb / wsum + 0.5);
             dst[y * dw + x] = (a << 24) | (r << 16) | (g << 8) | b;
         }
     }
@@ -366,10 +370,10 @@ static void icon_apply_shape(xcb_window_t iw, const uint32_t *scaled, const Laun
     int nr = 0;
     for (int y = 0; y < ICON_SIZE; y++) {
         for (int x = 0; x < ICON_SIZE; ) {
-            if (((icon_px(data, stride, x, y, lsb) >> 24) & 0xff) >= 16) {
+            if (((icon_px(data, stride, x, y, lsb) >> 24) & 0xff) >= 1) {
                 int x0 = x;
                 while (x < ICON_SIZE &&
-                       ((icon_px(data, stride, x, y, lsb) >> 24) & 0xff) >= 16)
+                       ((icon_px(data, stride, x, y, lsb) >> 24) & 0xff) >= 1)
                     x++;
                 rects[nr].x = (int16_t)x0;
                 rects[nr].y = (int16_t)y;
@@ -428,8 +432,8 @@ static void icon_draw(xcb_window_t iw, const LauncherIcon *ic, const IconImg *im
 
             scaled = malloc(sizeof(uint32_t) * (size_t)ICON_IMG * ICON_IMG);
             memset(scaled, 0, sizeof(uint32_t) * (size_t)ICON_IMG * ICON_IMG);
-            bilinear_scale(scaled + (size_t)oy * ICON_IMG + ox, dw, dh,
-                           img->px, img->w, img->h);
+            img_scale(scaled + (size_t)oy * ICON_IMG + ox, dw, dh,
+                      img->px, img->w, img->h);
 
             xcb_pixmap_t pm = xcb_generate_id(conn);
             xcb_create_pixmap(conn, 32, pm, root, ICON_IMG, ICON_IMG);
