@@ -107,21 +107,6 @@ sbcwmctl shortcut list
 sbcwmctl shortcut show on|off
 ```
 
-### Compile-time configuration (config.def.h)
-
-Things that are better baked into the binary live in `config.def.h`. Copy it to `config.h` and edit before compiling.
-
-Available toggles and defaults:
-
-```c
-#define TITLEBAR    0        /* window titlebars            */
-#define BORDER      1        /* window borders              */
-#define BORDER_W    1
-#define UI_HUD      1        /* HUD overlay                 */
-#define XR_COLORS   1        /* color scheme from Xresources */
-#define ROUND_CORNERS 0      /* rounded window corners      */
-```
-
 Titlebar icon glyphs (Xft symbol strings):
 
 ```c
